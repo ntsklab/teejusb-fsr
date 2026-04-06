@@ -97,3 +97,5 @@ $RECYCLE.BIN/
 
 # Runtime state files
 webui/server/serial_port_*.txt
+webui/server/profiles_*.txt
+webui/server/profiles.txt
