@@ -10,6 +10,7 @@ from collections import OrderedDict
 from random import normalvariate
 
 import serial
+from serial.tools import list_ports
 from aiohttp import web, WSCloseCode, WSMsgType
 from aiohttp.web import json_response
 
@@ -18,6 +19,17 @@ logger = logging.getLogger(__name__)
 # Edit this to match the serial port name shown in Arduino IDE
 SERIAL_PORT = "/dev/ttyACM0"
 HTTP_PORT = 5000
+
+# Candidate serial devices are filtered by these keywords.
+# Edit as needed for your hardware naming patterns.
+SERIAL_PORT_KEYWORDS = [
+  'teensy',
+  'arduino',
+  'ttyacm',
+  'ttyusb',
+  'ch340',
+  'cp210',
+]
 
 # Event to tell the reader and writer threads to exit.
 thread_stop_event = threading.Event()
@@ -308,6 +320,65 @@ def save_thresholds():
     logger.error('Could not save thresholds to device. Queue full.')
 
 
+def get_serial_port_candidates():
+  if NO_SERIAL:
+    return []
+
+  candidates = []
+  keywords = [k.lower() for k in SERIAL_PORT_KEYWORDS]
+  try:
+    ports = list_ports.comports()
+  except Exception as e:
+    logger.exception('Could not enumerate serial ports: %s', e)
+    ports = []
+
+  for port_info in ports:
+    path = port_info.device or ''
+    description = port_info.description or ''
+    manufacturer = port_info.manufacturer or ''
+    hwid = port_info.hwid or ''
+    searchable = ' '.join([path, description, manufacturer, hwid]).lower()
+
+    if keywords and not any(keyword in searchable for keyword in keywords):
+      continue
+
+    label = '{} ({})'.format(path, description) if description else path
+    candidates.append({
+      'path': path,
+      'label': label,
+    })
+
+  candidates.sort(key=lambda c: c['path'])
+
+  # Keep currently selected port visible in the dropdown even when it doesn't
+  # match the filter or is temporarily disconnected.
+  current = serial_handler.port
+  if current and not any(c['path'] == current for c in candidates):
+    candidates.append({
+      'path': current,
+      'label': '{} (current)'.format(current),
+    })
+
+  return candidates
+
+
+def set_serial_port(port):
+  try:
+    serial_handler.ChangePort(port)
+  except Exception as e:
+    logger.exception('Error changing serial port to %s: %s', port, e)
+  broadcast(['serial_port', {
+    'serial_port': serial_handler.port,
+    'serial_port_candidates': get_serial_port_candidates(),
+  }])
+
+
+def refresh_serial_port_candidates():
+  broadcast(['serial_port_candidates', {
+    'serial_port_candidates': get_serial_port_candidates(),
+  }])
+
+
 def add_profile(profile_name, thresholds):
   profile_handler.AddProfile(profile_name, thresholds)
   # When we add a profile, we are using the currently loaded thresholds so we
@@ -334,7 +405,9 @@ async def get_defaults(request):
   return json_response({
     'profiles': profile_handler.GetProfileNames(),
     'cur_profile': profile_handler.GetCurrentProfile(),
-    'thresholds': profile_handler.GetCurThresholds()
+    'thresholds': profile_handler.GetCurThresholds(),
+    'serial_port': serial_handler.port,
+    'serial_port_candidates': get_serial_port_candidates(),
   })
 
 
@@ -368,14 +441,17 @@ async def get_ws(request):
 
   # Potentially fetch any threshold values from the microcontroller that
   # may be out of sync with our profiles.
-  serial_handler.write_queue.put('t\n', block=False)
+  try:
+    serial_handler.write_queue.put('t\n', block=False)
+  except queue.Full:
+    logger.warning('Could not queue threshold sync request. Queue full.')
 
-  queue = asyncio.Queue(maxsize=100)
+  out_queue = asyncio.Queue(maxsize=100)
   with out_queues_lock:
-    out_queues.add(queue)
+    out_queues.add(out_queue)
 
   try:
-    queue_task = asyncio.create_task(queue.get())
+    queue_task = asyncio.create_task(out_queue.get())
     receive_task = asyncio.create_task(ws.receive())
     connected = True
 
@@ -390,7 +466,7 @@ async def get_ws(request):
           msg = await queue_task
           await ws.send_json(msg)
 
-          queue_task = asyncio.create_task(queue.get())
+          queue_task = asyncio.create_task(out_queue.get())
         elif task == receive_task:
           msg = await receive_task
 
@@ -412,6 +488,11 @@ async def get_ws(request):
             elif action == 'change_profile':
               profile_name, = data[1:]
               change_profile(profile_name)
+            elif action == 'set_serial_port':
+              port, = data[1:]
+              set_serial_port(port)
+            elif action == 'refresh_serial_port_candidates':
+              refresh_serial_port_candidates()
           elif msg.type == WSMsgType.CLOSE:
             connected = False
             continue
@@ -422,7 +503,7 @@ async def get_ws(request):
   finally:
     request.app['websockets'].remove(ws)
     with out_queues_lock:
-      out_queues.remove(queue)
+      out_queues.remove(out_queue)
 
   queue_task.cancel()
   receive_task.cancel()

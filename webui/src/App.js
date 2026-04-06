@@ -625,6 +625,10 @@ function FSRWebUI(props) {
   const numSensors = defaults.thresholds.length;
   const [profiles, setProfiles] = useState(defaults.profiles);
   const [activeProfile, setActiveProfile] = useState(defaults.cur_profile);
+  const [serialPort, setSerialPort] = useState(defaults.serial_port || '');
+  const [serialPortCandidates, setSerialPortCandidates] = useState(
+    defaults.serial_port_candidates || []
+  );
   const [showThresholdsSavedAlert, setShowThresholdsSavedAlert] = useState(false);
   useEffect(() => {
     const wsCallbacks = wsCallbacksRef.current;
@@ -639,11 +643,22 @@ function FSRWebUI(props) {
       setShowThresholdsSavedAlert(true);
       console.log("Saved thresholds: ", msg.thresholds) // TODO: display them
     };
+    wsCallbacks.serial_port = function(msg) {
+      setSerialPort(msg.serial_port || '');
+      if (msg.serial_port_candidates) {
+        setSerialPortCandidates(msg.serial_port_candidates);
+      }
+    };
+    wsCallbacks.serial_port_candidates = function(msg) {
+      setSerialPortCandidates(msg.serial_port_candidates || []);
+    };
 
     return () => {
       delete wsCallbacks.get_profiles;
       delete wsCallbacks.get_cur_profile;
       delete wsCallbacks.thresholds_saved;
+      delete wsCallbacks.serial_port;
+      delete wsCallbacks.serial_port_candidates;
     };
   }, [profiles, wsCallbacksRef]);
 
@@ -676,6 +691,21 @@ function FSRWebUI(props) {
     emit(['change_profile', profile_name]);
   }
 
+  function ChangeSerialPort(e) {
+    const nextPort = e.target.value;
+    setSerialPort(nextPort);
+    emit(['set_serial_port', nextPort]);
+  }
+
+  function RefreshSerialCandidates() {
+    emit(['refresh_serial_port_candidates']);
+  }
+
+  const serialOptions = [...serialPortCandidates];
+  if (serialPort && !serialOptions.some(option => option.path === serialPort)) {
+    serialOptions.push({ path: serialPort, label: serialPort + ' (current)' });
+  }
+
   return (
     <div className="App">
       <Router>
@@ -689,6 +719,29 @@ function FSRWebUI(props) {
             </Nav>
             <Button alignRight onClick={SaveThresholds}>Save thresholds</Button>
             <Nav className="ml-auto">
+              <NavDropdown alignRight title="Serial" id="serial-port-dropdown">
+                <div style={{padding: "0.5rem", minWidth: "22rem"}}>
+                  <Form.Group controlId="serialPortSelect" style={{marginBottom: "0.5rem"}}>
+                    <Form.Label style={{fontSize: "0.9rem", marginBottom: "0.25rem"}}>
+                      Device Port
+                    </Form.Label>
+                    <Form.Control as="select" value={serialPort} onChange={ChangeSerialPort}>
+                      {serialOptions.length === 0 ? (
+                        <option value="">No matching serial devices</option>
+                      ) : (
+                        serialOptions.map(option => (
+                          <option key={option.path} value={option.path}>
+                            {option.label}
+                          </option>
+                        ))
+                      )}
+                    </Form.Control>
+                  </Form.Group>
+                  <Button variant="outline-secondary" size="sm" onClick={RefreshSerialCandidates}>
+                    Refresh devices
+                  </Button>
+                </div>
+              </NavDropdown>
               <NavDropdown alignRight title="Profile" id="collasible-nav-dropdown">
                 {profiles.map(function(profile) {
                   if (profile === activeProfile) {
