@@ -702,9 +702,8 @@ function FSRWebUI(props) {
   }
 
   const serialOptions = [...serialPortCandidates];
-  if (serialPort && !serialOptions.some(option => option.path === serialPort)) {
-    serialOptions.push({ path: serialPort, label: serialPort + ' (current)' });
-  }
+  const hasSelectedPortCandidate = serialOptions.some(option => option.path === serialPort);
+  const serialSelectValue = hasSelectedPortCandidate ? serialPort : '';
 
   return (
     <div className="App">
@@ -725,18 +724,28 @@ function FSRWebUI(props) {
                     <Form.Label style={{fontSize: "0.9rem", marginBottom: "0.25rem"}}>
                       Device Port
                     </Form.Label>
-                    <Form.Control as="select" value={serialPort} onChange={ChangeSerialPort}>
+                    <Form.Control as="select" value={serialSelectValue} onChange={ChangeSerialPort}>
                       {serialOptions.length === 0 ? (
-                        <option value="">No matching serial devices</option>
+                        <option value="">No matching serial devices found</option>
                       ) : (
-                        serialOptions.map(option => (
-                          <option key={option.path} value={option.path}>
-                            {option.label}
-                          </option>
-                        ))
+                        <>
+                          {!hasSelectedPortCandidate && (
+                            <option value="">Select a device port</option>
+                          )}
+                          {serialOptions.map(option => (
+                            <option key={option.path} value={option.path}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </>
                       )}
                     </Form.Control>
                   </Form.Group>
+                  {serialOptions.length === 0 && (
+                    <div style={{color: "#6c757d", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
+                      対象機器のシリアルデバイスが見つかりません。接続後に Refresh devices を押してください。
+                    </div>
+                  )}
                   <Button variant="outline-secondary" size="sm" onClick={RefreshSerialCandidates}>
                     Refresh devices
                   </Button>

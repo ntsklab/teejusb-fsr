@@ -350,15 +350,6 @@ def get_serial_port_candidates():
 
   candidates.sort(key=lambda c: c['path'])
 
-  # Keep currently selected port visible in the dropdown even when it doesn't
-  # match the filter or is temporarily disconnected.
-  current = serial_handler.port
-  if current and not any(c['path'] == current for c in candidates):
-    candidates.append({
-      'path': current,
-      'label': '{} (current)'.format(current),
-    })
-
   return candidates
 
 
