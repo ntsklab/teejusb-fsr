@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 
-import logo from './logo.svg';
 import './App.css';
 
 import Alert from 'react-bootstrap/Alert'
@@ -82,15 +81,7 @@ function useWsConnection({ defaults, onCloseWs }) {
   // Some values such as sensor readings are stored in a mutable array in a ref so that
   // they are not subject to the React render cycle, for performance reasons.
   const webUIDataRef = useRef({
-
-    // A history of the past 'MAX_SIZE' values fetched from the backend.
-    // Used for plotting and displaying live values.
-    // We use a cyclical array to save memory.
-    curValues: [],
-    oldest: 0,
-
-    // Keep track of the current thresholds fetched from the backend.
-    curThresholds: [],
+    slots: {},
   });
 
   const wsRef = useRef();
@@ -106,37 +97,46 @@ function useWsConnection({ defaults, onCloseWs }) {
   }, [isWsReady, wsRef]);
 
   wsCallbacksRef.current.values = function(msg) {
-    const webUIData = webUIDataRef.current;
-    if (webUIData.curValues.length < MAX_SIZE) {
-      webUIData.curValues.push(msg.values);
+    const slotData = webUIDataRef.current.slots[msg.slot];
+    if (!slotData) {
+      return;
+    }
+    if (slotData.curValues.length < MAX_SIZE) {
+      slotData.curValues.push(msg.values);
     } else {
-      webUIData.curValues[webUIData.oldest] = msg.values;
-      webUIData.oldest = (webUIData.oldest + 1) % MAX_SIZE;
+      slotData.curValues[slotData.oldest] = msg.values;
+      slotData.oldest = (slotData.oldest + 1) % MAX_SIZE;
     }
   };
 
   wsCallbacksRef.current.thresholds = function(msg) {
+    const slotData = webUIDataRef.current.slots[msg.slot];
+    if (!slotData) {
+      return;
+    }
     // Modify thresholds array in place instead of replacing it
     // so that animation loops can have a stable reference.
-    webUIDataRef.current.curThresholds.length = 0;
-    webUIDataRef.current.curThresholds.push(...msg.thresholds);
+    slotData.curThresholds.length = 0;
+    slotData.curThresholds.push(...msg.thresholds);
   };
 
   useEffect(() => {
     let cleaningUp = false;
-    const webUIData = webUIDataRef.current;
-
     if (!defaults) {
       // If defaults are loading or reloading, don't connect.
       return;
     }
 
-    // Ensure values history reset and default thresholds are set.
-    webUIData.curValues.length = 0;
-    webUIData.curValues.push(new Array(defaults.thresholds.length).fill(0));
-    webUIData.oldest = 0;
-    webUIDataRef.current.curThresholds.length = 0;
-    webUIDataRef.current.curThresholds.push(...defaults.thresholds);
+    // Ensure values history reset and default thresholds are set for each slot.
+    webUIDataRef.current.slots = {};
+    Object.keys(defaults.slots).forEach((slot) => {
+      const thresholds = defaults.slots[slot].thresholds || [];
+      webUIDataRef.current.slots[slot] = {
+        curValues: [new Array(thresholds.length).fill(0)],
+        oldest: 0,
+        curThresholds: [...thresholds],
+      };
+    });
 
     const ws = new WebSocket('ws://' + window.location.host + '/ws');
     wsRef.current = ws;
@@ -178,22 +178,27 @@ function useWsConnection({ defaults, onCloseWs }) {
 // An interactive display of the current values obtained by the backend.
 // Also has functionality to manipulate thresholds.
 function ValueMonitor(props) {
-  const { emit, index, webUIDataRef } = props;
+  const { emit, slot, index, webUIDataRef } = props;
   const thresholdLabelRef = React.useRef(null);
   const valueLabelRef = React.useRef(null);
   const canvasRef = React.useRef(null);
-  const curValues = webUIDataRef.current.curValues;
-  const curThresholds = webUIDataRef.current.curThresholds;
+
+  const getSlotData = useCallback(() => {
+    return webUIDataRef.current.slots[slot] || { curValues: [], oldest: 0, curThresholds: [] };
+  }, [slot, webUIDataRef]);
 
   const EmitValue = useCallback((val) => {
     // Send back all the thresholds instead of a single value per sensor. This is in case
     // the server restarts where it would be nicer to have all the values in sync.
     // Still send back the index since we want to update only one value at a time
     // to the microcontroller.
-    emit(['update_threshold', curThresholds, index]);
-  }, [curThresholds, emit, index])
+    const slotData = getSlotData();
+    emit(['update_threshold', slot, slotData.curThresholds, index]);
+  }, [emit, getSlotData, index, slot])
 
   function Decrement(e) {
+    const slotData = getSlotData();
+    const curThresholds = slotData.curThresholds;
     const val = curThresholds[index] - 1;
     if (val >= 0) {
       curThresholds[index] = val;
@@ -202,6 +207,8 @@ function ValueMonitor(props) {
   }
 
   function Increment(e) {
+    const slotData = getSlotData();
+    const curThresholds = slotData.curThresholds;
     const val = curThresholds[index] + 1;
     if (val <= 1023) {
       curThresholds[index] = val
@@ -237,18 +244,21 @@ function ValueMonitor(props) {
 
     // Mouse Events
     canvas.addEventListener('mousedown', function(e) {
+      const curThresholds = getSlotData().curThresholds;
       let pos = getMousePos(canvas, e);
       curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
       is_drag = true;
     });
 
     canvas.addEventListener('mouseup', function(e) {
+      const curThresholds = getSlotData().curThresholds;
       EmitValue(curThresholds[index]);
       is_drag = false;
     });
 
     canvas.addEventListener('mousemove', function(e) {
       if (is_drag) {
+        const curThresholds = getSlotData().curThresholds;
         let pos = getMousePos(canvas, e);
         curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
       }
@@ -256,12 +266,14 @@ function ValueMonitor(props) {
 
     // Touch Events
     canvas.addEventListener('touchstart', function(e) {
+      const curThresholds = getSlotData().curThresholds;
       let pos = getTouchPos(canvas, e);
       curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
       is_drag = true;
     });
 
     canvas.addEventListener('touchend', function(e) {
+      const curThresholds = getSlotData().curThresholds;
       // We don't need to set the curThreshold as it's already updated within the
       // touchstart/touchmove events.
       EmitValue(curThresholds[index]);
@@ -270,6 +282,7 @@ function ValueMonitor(props) {
 
     canvas.addEventListener('touchmove', function(e) {
       if (is_drag) {
+        const curThresholds = getSlotData().curThresholds;
         let pos = getTouchPos(canvas, e);
         curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
       }
@@ -296,7 +309,15 @@ function ValueMonitor(props) {
     let previousTimestamp;
 
     const render = (timestamp) => {
-      const oldest = webUIDataRef.current.oldest;
+      const slotData = getSlotData();
+      const curValues = slotData.curValues;
+      const curThresholds = slotData.curThresholds;
+      const oldest = slotData.oldest;
+
+      if (curValues.length === 0 || curThresholds.length <= index) {
+        requestId = requestAnimationFrame(render);
+        return;
+      }
 
       if (previousTimestamp && (timestamp - previousTimestamp) < minFrameDurationMs) {
         requestId = requestAnimationFrame(render);
@@ -364,7 +385,7 @@ function ValueMonitor(props) {
       cancelAnimationFrame(requestId);
       window.removeEventListener('resize', setDimensions);
     };
-  }, [EmitValue, curThresholds, curValues, index, webUIDataRef]);
+  }, [EmitValue, getSlotData, index, webUIDataRef]);
 
   return(
     <Col className="ValueMonitor-col">
@@ -384,10 +405,10 @@ function ValueMonitor(props) {
 }
 
 function ValueMonitors(props) {
-  const { numSensors } = props;
+  const { numSensors, containerHeight } = props;
   return (
     <header className="App-header">
-      <Container fluid style={{border: '1px solid white', height: '100vh'}}>
+      <Container fluid style={{border: '1px solid white', height: containerHeight || '100vh'}}>
         <Row className="ValueMonitor-row">
           {props.children}
         </Row>
@@ -414,13 +435,14 @@ function ValueMonitors(props) {
 
 function Plot(props) {
   const canvasRef = React.useRef(null);
-  const numSensors = props.numSensors;
-  const webUIDataRef = props.webUIDataRef;
+  const { numSensors, slot, webUIDataRef, containerHeight } = props;
   const [display, setDisplay] = useState(new Array(numSensors).fill(true));
   // `buttonNames` is only used if the number of sensors matches the number of button names.
   const buttonNames = ['Left', 'Down', 'Up', 'Right'];
-  const curValues = webUIDataRef.current.curValues;
-  const curThresholds = webUIDataRef.current.curThresholds;
+
+  const getSlotData = useCallback(() => {
+    return webUIDataRef.current.slots[slot] || { curValues: [], oldest: 0, curThresholds: [] };
+  }, [slot, webUIDataRef]);
 
   // Color values for sensors
   const degreesPerSensor = 360 / numSensors;
@@ -459,7 +481,15 @@ function Plot(props) {
     let previousTimestamp;
 
     const render = (timestamp) => {
-      const oldest = webUIDataRef.current.oldest;
+      const slotData = getSlotData();
+      const curValues = slotData.curValues;
+      const curThresholds = slotData.curThresholds;
+      const oldest = slotData.oldest;
+
+      if (curValues.length === 0) {
+        requestId = requestAnimationFrame(render);
+        return;
+      }
 
       if (previousTimestamp && (timestamp - previousTimestamp) < minFrameDurationMs) {
         requestId = requestAnimationFrame(render);
@@ -565,7 +595,7 @@ function Plot(props) {
       cancelAnimationFrame(requestId);
       window.removeEventListener('resize', setDimensions);
     };
-  }, [colors, curThresholds, curValues, darkColors, display, numSensors, webUIDataRef]);
+  }, [colors, darkColors, display, getSlotData, numSensors, slot, webUIDataRef]);
 
   const ToggleLine = (index) => {
     setDisplay(display => {
@@ -596,15 +626,15 @@ function Plot(props) {
 
   return (
     <header className="App-header">
-      <Container fluid style={{border: '1px solid white', height: '100vh'}}>
+      <Container fluid style={{border: '1px solid white', height: containerHeight || '100vh'}}>
         <Row>
-          <Col style={{height: '9vh', paddingTop: '2vh'}}>
+          <Col style={{height: '12%', paddingTop: '1vh'}}>
             <span>Display: </span>
             {toggleButtons}
           </Col>
         </Row>
         <Row>
-          <Col style={{height: '86vh'}}>
+          <Col style={{height: '84%'}}>
             <canvas
               ref={canvasRef}
               style={{
@@ -622,88 +652,125 @@ function Plot(props) {
 
 function FSRWebUI(props) {
   const { emit, defaults, webUIDataRef, wsCallbacksRef } = props;
-  const numSensors = defaults.thresholds.length;
-  const [profiles, setProfiles] = useState(defaults.profiles);
-  const [activeProfile, setActiveProfile] = useState(defaults.cur_profile);
-  const [serialPort, setSerialPort] = useState(defaults.serial_port || '');
-  const [serialPortCandidates, setSerialPortCandidates] = useState(
-    defaults.serial_port_candidates || []
+  const slotIds = Object.keys(defaults.slots || {}).sort();
+  const [profilesBySlot, setProfilesBySlot] = useState(
+    slotIds.reduce((acc, slot) => {
+      acc[slot] = defaults.slots[slot].profiles || [];
+      return acc;
+    }, {})
   );
-  const [showThresholdsSavedAlert, setShowThresholdsSavedAlert] = useState(false);
+  const [activeProfileBySlot, setActiveProfileBySlot] = useState(
+    slotIds.reduce((acc, slot) => {
+      acc[slot] = defaults.slots[slot].cur_profile || '';
+      return acc;
+    }, {})
+  );
+  const [serialPortBySlot, setSerialPortBySlot] = useState(
+    slotIds.reduce((acc, slot) => {
+      acc[slot] = defaults.slots[slot].serial_port || '';
+      return acc;
+    }, {})
+  );
+  const [serialPortCandidatesBySlot, setSerialPortCandidatesBySlot] = useState(
+    slotIds.reduce((acc, slot) => {
+      acc[slot] = defaults.slots[slot].serial_port_candidates || [];
+      return acc;
+    }, {})
+  );
+  const [showThresholdsSavedAlertBySlot, setShowThresholdsSavedAlertBySlot] = useState(
+    slotIds.reduce((acc, slot) => {
+      acc[slot] = false;
+      return acc;
+    }, {})
+  );
+  const [serialPortErrorBySlot, setSerialPortErrorBySlot] = useState(
+    slotIds.reduce((acc, slot) => {
+      acc[slot] = '';
+      return acc;
+    }, {})
+  );
+
+  function getSlotData(slot) {
+    return webUIDataRef.current.slots[slot] || { curThresholds: [] };
+  }
+
   useEffect(() => {
     const wsCallbacks = wsCallbacksRef.current;
 
     wsCallbacks.get_profiles = function(msg) {
-      setProfiles(msg.profiles);
+      setProfilesBySlot(prev => ({ ...prev, [msg.slot]: msg.profiles }));
     };
     wsCallbacks.get_cur_profile = function(msg) {
-      setActiveProfile(msg.cur_profile);
+      setActiveProfileBySlot(prev => ({ ...prev, [msg.slot]: msg.cur_profile }));
     };
-    wsCallbacks.thresholds_saved = function (msg) {
-      setShowThresholdsSavedAlert(true);
-      console.log("Saved thresholds: ", msg.thresholds) // TODO: display them
+    wsCallbacks.thresholds_persisted = function(msg) {
+      setShowThresholdsSavedAlertBySlot(prev => ({ ...prev, [msg.slot]: true }));
     };
     wsCallbacks.serial_port = function(msg) {
-      setSerialPort(msg.serial_port || '');
+      setSerialPortBySlot(prev => ({ ...prev, [msg.slot]: msg.serial_port || '' }));
       if (msg.serial_port_candidates) {
-        setSerialPortCandidates(msg.serial_port_candidates);
+        setSerialPortCandidatesBySlot(prev => ({
+          ...prev,
+          [msg.slot]: msg.serial_port_candidates,
+        }));
       }
+      setSerialPortErrorBySlot(prev => ({ ...prev, [msg.slot]: '' }));
     };
     wsCallbacks.serial_port_candidates = function(msg) {
-      setSerialPortCandidates(msg.serial_port_candidates || []);
+      setSerialPortCandidatesBySlot(prev => ({
+        ...prev,
+        [msg.slot]: msg.serial_port_candidates || [],
+      }));
+    };
+    wsCallbacks.serial_port_error = function(msg) {
+      setSerialPortErrorBySlot(prev => ({ ...prev, [msg.slot]: msg.message || '' }));
     };
 
     return () => {
       delete wsCallbacks.get_profiles;
       delete wsCallbacks.get_cur_profile;
-      delete wsCallbacks.thresholds_saved;
+      delete wsCallbacks.thresholds_persisted;
       delete wsCallbacks.serial_port;
       delete wsCallbacks.serial_port_candidates;
+      delete wsCallbacks.serial_port_error;
     };
-  }, [profiles, wsCallbacksRef]);
+  }, [wsCallbacksRef]);
 
-  function AddProfile(e) {
+  function AddProfile(e, slot) {
     // Only add a profile on the enter key.
     if (e.keyCode === 13) {
-      emit(['add_profile', e.target.value, webUIDataRef.current.curThresholds]);
+      emit(['add_profile', slot, e.target.value, getSlotData(slot).curThresholds]);
       // Reset the text box.
       e.target.value = "";
     }
     return false;
   }
 
-  function RemoveProfile(e) {
+  function RemoveProfile(e, slot, profileName) {
     // The X button is inside the Change Profile button,
     // so stop the event from bubbling up and triggering the ChangeProfile handler.
     e.stopPropagation();
-    // Strip out the "X " added by the button.
-    const profile_name = e.target.parentNode.innerText.replace('X ', '');
-    emit(['remove_profile', profile_name]);
+    emit(['remove_profile', slot, profileName]);
   }
 
-  function SaveThresholds(e) {
-    emit(['save_thresholds']);
+  function SaveThresholds(slot) {
+    emit(['save_thresholds', slot]);
   }
 
-  function ChangeProfile(e) {
-    // Strip out the "X " added by the button.
-    const profile_name = e.target.innerText.replace('X ', '');
-    emit(['change_profile', profile_name]);
+  function ChangeProfile(slot, profileName) {
+    emit(['change_profile', slot, profileName]);
   }
 
-  function ChangeSerialPort(e) {
+  function ChangeSerialPort(slot, e) {
     const nextPort = e.target.value;
-    setSerialPort(nextPort);
-    emit(['set_serial_port', nextPort]);
+    setSerialPortBySlot(prev => ({ ...prev, [slot]: nextPort }));
+    setSerialPortErrorBySlot(prev => ({ ...prev, [slot]: '' }));
+    emit(['set_serial_port', slot, nextPort]);
   }
 
-  function RefreshSerialCandidates() {
-    emit(['refresh_serial_port_candidates']);
+  function RefreshSerialCandidates(slot) {
+    emit(['refresh_serial_port_candidates', slot]);
   }
-
-  const serialOptions = [...serialPortCandidates];
-  const hasSelectedPortCandidate = serialOptions.some(option => option.path === serialPort);
-  const serialSelectValue = hasSelectedPortCandidate ? serialPort : '';
 
   return (
     <div className="App">
@@ -716,88 +783,151 @@ function FSRWebUI(props) {
                 <Nav.Link as={Link} to="/plot">Plot</Nav.Link>
               </Nav.Item>
             </Nav>
-            <Button alignRight onClick={SaveThresholds}>Save thresholds</Button>
             <Nav className="ml-auto">
-              <NavDropdown alignRight title="Serial" id="serial-port-dropdown">
-                <div style={{padding: "0.5rem", minWidth: "22rem"}}>
-                  <Form.Group controlId="serialPortSelect" style={{marginBottom: "0.5rem"}}>
-                    <Form.Label style={{fontSize: "0.9rem", marginBottom: "0.25rem"}}>
-                      Device Port
-                    </Form.Label>
-                    <Form.Control as="select" value={serialSelectValue} onChange={ChangeSerialPort}>
-                      {serialOptions.length === 0 ? (
-                        <option value="">No matching serial devices found</option>
-                      ) : (
-                        <>
-                          {!hasSelectedPortCandidate && (
-                            <option value="">Select a device port</option>
-                          )}
-                          {serialOptions.map(option => (
-                            <option key={option.path} value={option.path}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </>
-                      )}
-                    </Form.Control>
-                  </Form.Group>
-                  {serialOptions.length === 0 && (
-                    <div style={{color: "#6c757d", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
-                      対象機器のシリアルデバイスが見つかりません。接続後に Refresh devices を押してください。
-                    </div>
-                  )}
-                  <Button variant="outline-secondary" size="sm" onClick={RefreshSerialCandidates}>
-                    Refresh devices
-                  </Button>
-                </div>
-              </NavDropdown>
-              <NavDropdown alignRight title="Profile" id="collasible-nav-dropdown">
-                {profiles.map(function(profile) {
-                  if (profile === activeProfile) {
-                    return(
-                      <NavDropdown.Item key={profile} style={{paddingLeft: "0.5rem"}}
-                          onClick={ChangeProfile} active>
-                        <Button variant="light" onClick={RemoveProfile}>X</Button>{' '}{profile}
-                      </NavDropdown.Item>
-                    );
-                  } else {
-                    return(
-                      <NavDropdown.Item key={profile} style={{paddingLeft: "0.5rem"}}
-                          onClick={ChangeProfile}>
-                        <Button variant="light" onClick={RemoveProfile}>X</Button>{' '}{profile}
-                      </NavDropdown.Item>
-                    );
-                  }
-                })}
-                <NavDropdown.Divider />
-                <Form inline onSubmit={(e) => e.preventDefault()}>
-                  <Form.Control
-                      onKeyDown={AddProfile}
-                      style={{marginLeft: "0.5rem", marginRight: "0.5rem"}}
-                      type="text"
-                      placeholder="New Profile" />
-                </Form>
-              </NavDropdown>
+              {slotIds.map(slot => {
+                const serialPort = serialPortBySlot[slot] || '';
+                const serialOptions = [...(serialPortCandidatesBySlot[slot] || [])];
+                const hasSelectedPortCandidate = serialOptions.some(option => option.path === serialPort);
+                const serialSelectValue = hasSelectedPortCandidate ? serialPort : '';
+                const profiles = profilesBySlot[slot] || [];
+                const activeProfile = activeProfileBySlot[slot] || '';
+                return (
+                  <React.Fragment key={slot}>
+                    <Button
+                      style={{marginRight: '0.5rem'}}
+                      onClick={() => SaveThresholds(slot)}
+                    >
+                      Save {slot.toUpperCase()}
+                    </Button>
+                    <NavDropdown alignRight title={`Serial ${slot.toUpperCase()}`} id={`serial-port-dropdown-${slot}`}>
+                      <div style={{padding: "0.5rem", minWidth: "22rem"}}>
+                        <Form.Group controlId={`serialPortSelect-${slot}`} style={{marginBottom: "0.5rem"}}>
+                          <Form.Label style={{fontSize: "0.9rem", marginBottom: "0.25rem"}}>
+                            Device Port
+                          </Form.Label>
+                          <Form.Control as="select" value={serialSelectValue} onChange={(e) => ChangeSerialPort(slot, e)}>
+                            {serialOptions.length === 0 ? (
+                              <option value="">No matching serial devices found</option>
+                            ) : (
+                              <>
+                                {!hasSelectedPortCandidate && (
+                                  <option value="">Select a device port</option>
+                                )}
+                                {serialOptions.map(option => (
+                                  <option
+                                    key={option.path}
+                                    value={option.path}
+                                    disabled={Boolean(option.in_use_by)}
+                                  >
+                                    {option.label}
+                                    {option.in_use_by ? ` (used by ${option.in_use_by.toUpperCase()})` : ''}
+                                  </option>
+                                ))}
+                              </>
+                            )}
+                          </Form.Control>
+                        </Form.Group>
+                        {serialPortErrorBySlot[slot] && (
+                          <div style={{color: "#dc3545", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
+                            {serialPortErrorBySlot[slot]}
+                          </div>
+                        )}
+                        {serialOptions.length === 0 && (
+                          <div style={{color: "#6c757d", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
+                            対象機器のシリアルデバイスが見つかりません。接続後に Refresh devices を押してください。
+                          </div>
+                        )}
+                        <Button variant="outline-secondary" size="sm" onClick={() => RefreshSerialCandidates(slot)}>
+                          Refresh devices
+                        </Button>
+                      </div>
+                    </NavDropdown>
+                    <NavDropdown alignRight title={`Profile ${slot.toUpperCase()}`} id={`profile-dropdown-${slot}`}>
+                      {profiles.map((profile) => (
+                        <NavDropdown.Item
+                          key={`${slot}-${profile}`}
+                          style={{paddingLeft: "0.5rem"}}
+                          onClick={() => ChangeProfile(slot, profile)}
+                          active={profile === activeProfile}
+                        >
+                          <Button variant="light" onClick={(e) => RemoveProfile(e, slot, profile)}>X</Button>{' '}{profile}
+                        </NavDropdown.Item>
+                      ))}
+                      <NavDropdown.Divider />
+                      <Form inline onSubmit={(e) => e.preventDefault()}>
+                        <Form.Control
+                            onKeyDown={(e) => AddProfile(e, slot)}
+                            style={{marginLeft: "0.5rem", marginRight: "0.5rem"}}
+                            type="text"
+                            placeholder={`New Profile (${slot.toUpperCase()})`} />
+                      </Form>
+                    </NavDropdown>
+                  </React.Fragment>
+                );
+              })}
             </Nav>
           </Navbar>
-          <Alert show={ showThresholdsSavedAlert }
-            variant="success"
-            dismissible
-            onClose={()=>setShowThresholdsSavedAlert(false)}
-          >
-            Saved thresholds to device successfully!
-          </Alert>
+          {slotIds.map(slot => (
+            <Alert
+              key={`save-alert-${slot}`}
+              show={Boolean(showThresholdsSavedAlertBySlot[slot])}
+              variant="success"
+              dismissible
+              onClose={() => setShowThresholdsSavedAlertBySlot(prev => ({ ...prev, [slot]: false }))}
+            >
+              Saved thresholds to {slot.toUpperCase()} device successfully!
+            </Alert>
+          ))}
         </>
         <Switch>
           <Route exact path="/">
-            <ValueMonitors numSensors={numSensors}>
-              {[...Array(numSensors).keys()].map(index => (
-                <ValueMonitor emit={emit} index={index} key={index} webUIDataRef={webUIDataRef} />)
-              )}
-            </ValueMonitors>
+            <Container fluid style={{padding: 0}}>
+              <Row noGutters>
+                {slotIds.map(slot => {
+                  const numSensors = (defaults.slots[slot].thresholds || []).length;
+                  return (
+                    <Col key={`slot-monitor-${slot}`} xs={12} md={6}>
+                      <div style={{background: '#f8f9fa', color: '#333', padding: '0.35rem 0.75rem', border: '1px solid #ddd'}}>
+                        {slot.toUpperCase()} Monitor
+                      </div>
+                      <ValueMonitors numSensors={numSensors} containerHeight="46vh">
+                        {[...Array(numSensors).keys()].map(index => (
+                          <ValueMonitor
+                            emit={emit}
+                            slot={slot}
+                            index={index}
+                            key={`${slot}-monitor-${index}`}
+                            webUIDataRef={webUIDataRef}
+                          />)
+                        )}
+                      </ValueMonitors>
+                    </Col>
+                  );
+                })}
+              </Row>
+            </Container>
           </Route>
           <Route path="/plot">
-            <Plot numSensors={numSensors} webUIDataRef={webUIDataRef} />
+            <Container fluid style={{padding: 0}}>
+              <Row noGutters>
+                {slotIds.map(slot => {
+                  const numSensors = (defaults.slots[slot].thresholds || []).length;
+                  return (
+                    <Col key={`slot-plot-${slot}`} xs={12} md={6}>
+                      <div style={{background: '#f8f9fa', color: '#333', padding: '0.35rem 0.75rem', border: '1px solid #ddd'}}>
+                        {slot.toUpperCase()} Plot
+                      </div>
+                      <Plot
+                        numSensors={numSensors}
+                        slot={slot}
+                        webUIDataRef={webUIDataRef}
+                        containerHeight="46vh"
+                      />
+                    </Col>
+                  );
+                })}
+              </Row>
+            </Container>
           </Route>
         </Switch>
       </Router>

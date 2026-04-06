@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Start with no serial port selected. Pick one from the WebUI.
 SERIAL_PORT = ""
 HTTP_PORT = 5000
-SERIAL_PORT_FILENAME = 'serial_port.txt'
+SLOT_IDS = ['1p', '2p']
 
 # Candidate serial devices are filtered by these keywords.
 # Edit as needed for your hardware naming patterns.
@@ -46,33 +46,33 @@ sensor_numbers = range(num_sensors)
 NO_SERIAL = False
 
 
-def get_serial_port_file_path():
-  return os.path.join(os.path.dirname(__file__), SERIAL_PORT_FILENAME)
+def get_serial_port_file_path(slot):
+  return os.path.join(os.path.dirname(__file__), 'serial_port_{}.txt'.format(slot))
 
 
-def load_serial_port_from_file():
+def load_serial_port_from_file(slot):
   if NO_SERIAL:
     return ''
 
   try:
-    with open(get_serial_port_file_path(), 'r') as f:
+    with open(get_serial_port_file_path(slot), 'r') as f:
       return f.read().strip()
   except FileNotFoundError:
     return ''
   except OSError as e:
-    logger.exception('Could not read serial port file: %s', e)
+    logger.exception('Could not read serial port file for %s: %s', slot, e)
     return ''
 
 
-def save_serial_port_to_file(port):
+def save_serial_port_to_file(slot, port):
   if NO_SERIAL:
     return
 
   try:
-    with open(get_serial_port_file_path(), 'w') as f:
+    with open(get_serial_port_file_path(slot), 'w') as f:
       f.write(port)
   except OSError as e:
-    logger.exception('Could not write serial port file: %s', e)
+    logger.exception('Could not write serial port file for %s: %s', slot, e)
 
 
 class ProfileHandler(object):
@@ -86,7 +86,8 @@ class ProfileHandler(object):
     loaded: bool, whether or not the backend has already loaded the
       profile data file or not.
   """
-  def __init__(self, filename='profiles.txt'):
+  def __init__(self, slot_id, filename='profiles.txt'):
+    self.slot_id = slot_id
     self.filename = filename
     self.profiles = OrderedDict()
     self.cur_profile = ''
@@ -129,16 +130,25 @@ class ProfileHandler(object):
         for name, thresholds in self.profiles.items():
           if name:
             f.write(name + ' ' + ' '.join(map(str, thresholds)) + '\n')
-      broadcast(['thresholds', {'thresholds': self.GetCurThresholds()}])
+      broadcast(['thresholds', {
+        'slot': self.slot_id,
+        'thresholds': self.GetCurThresholds(),
+      }])
       print('Thresholds are: ' + str(self.GetCurThresholds()))
 
   def ChangeProfile(self, profile_name):
     if profile_name in self.profiles:
       self.cur_profile = profile_name
-      broadcast(['thresholds', {'thresholds': self.GetCurThresholds()}])
-      broadcast(['get_cur_profile', {'cur_profile': self.GetCurrentProfile()}])
-      print('Changed to profile "{}" with thresholds: {}'.format(
-        self.GetCurrentProfile(), str(self.GetCurThresholds())))
+      broadcast(['thresholds', {
+        'slot': self.slot_id,
+        'thresholds': self.GetCurThresholds(),
+      }])
+      broadcast(['get_cur_profile', {
+        'slot': self.slot_id,
+        'cur_profile': self.GetCurrentProfile(),
+      }])
+      print('[{}] Changed to profile "{}" with thresholds: {}'.format(
+        self.slot_id, self.GetCurrentProfile(), str(self.GetCurThresholds())))
 
   def GetProfileNames(self):
     return [name for name in self.profiles.keys() if name]
@@ -153,9 +163,12 @@ class ProfileHandler(object):
       for name, thresholds in self.profiles.items():
         if name:
           f.write(name + ' ' + ' '.join(map(str, thresholds)) + '\n')
-    broadcast(['get_profiles', {'profiles': self.GetProfileNames()}])
-    print('Added profile "{}" with thresholds: {}'.format(
-      self.GetCurrentProfile(), str(self.GetCurThresholds())))
+    broadcast(['get_profiles', {
+      'slot': self.slot_id,
+      'profiles': self.GetProfileNames(),
+    }])
+    print('[{}] Added profile "{}" with thresholds: {}'.format(
+      self.slot_id, self.GetCurrentProfile(), str(self.GetCurThresholds())))
 
   def RemoveProfile(self, profile_name):
     if profile_name in self.profiles:
@@ -166,11 +179,20 @@ class ProfileHandler(object):
         for name, thresholds in self.profiles.items():
           if name:
             f.write(name + ' ' + ' '.join(map(str, thresholds)) + '\n')
-      broadcast(['get_profiles', {'profiles': self.GetProfileNames()}])
-      broadcast(['thresholds', {'thresholds': self.GetCurThresholds()}])
-      broadcast(['get_cur_profile', {'cur_profile': self.GetCurrentProfile()}])
-      print('Removed profile "{}". Current thresholds are: {}'.format(
-        profile_name, str(self.GetCurThresholds())))
+      broadcast(['get_profiles', {
+        'slot': self.slot_id,
+        'profiles': self.GetProfileNames(),
+      }])
+      broadcast(['thresholds', {
+        'slot': self.slot_id,
+        'thresholds': self.GetCurThresholds(),
+      }])
+      broadcast(['get_cur_profile', {
+        'slot': self.slot_id,
+        'cur_profile': self.GetCurrentProfile(),
+      }])
+      print('[{}] Removed profile "{}". Current thresholds are: {}'.format(
+        self.slot_id, profile_name, str(self.GetCurThresholds())))
 
   def GetCurrentProfile(self):
     return self.cur_profile
@@ -189,7 +211,8 @@ class SerialHandler(object):
     profile_handler: ProfileHandler, the global profile_handler used to update
       the thresholds
   """
-  def __init__(self, profile_handler, port='', timeout=1):
+  def __init__(self, slot_id, profile_handler, port='', timeout=1):
+    self.slot_id = slot_id
     self.ser = None
     self.port = port
     self.timeout = timeout
@@ -234,7 +257,7 @@ class SerialHandler(object):
       actual = []
       for i in range(num_sensors):
         actual.append(values[sensor_numbers[i]])
-      broadcast(['values', {'values': actual}])
+      broadcast(['values', {'slot': self.slot_id, 'values': actual}])
       time.sleep(0.01)
 
     def ProcessThresholds(values):
@@ -248,7 +271,10 @@ class SerialHandler(object):
           self.profile_handler.UpdateThresholds(i, act)
 
     def ConfirmPersisted(values):
-      broadcast(['thresholds_persisted', {'thresholds': values}])
+      broadcast(['thresholds_persisted', {
+        'slot': self.slot_id,
+        'thresholds': values,
+      }])
 
     while not thread_stop_event.is_set():
       if NO_SERIAL:
@@ -257,7 +283,7 @@ class SerialHandler(object):
           max(0, min(self.no_serial_values[i] + offsets[i], 1023))
           for i in range(num_sensors)
         ]
-        broadcast(['values', {'values': self.no_serial_values}])
+        broadcast(['values', {'slot': self.slot_id, 'values': self.no_serial_values}])
         time.sleep(0.01)
       else:
         if not self.ser:
@@ -306,8 +332,10 @@ class SerialHandler(object):
         continue
       if NO_SERIAL:
         if command[0] == 't':
-          broadcast(['thresholds',
-            {'thresholds': self.profile_handler.GetCurThresholds()}])
+          broadcast(['thresholds', {
+            'slot': self.slot_id,
+            'thresholds': self.profile_handler.GetCurThresholds(),
+          }])
           print('Thresholds are: ' +
             str(self.profile_handler.GetCurThresholds()))
         else:
@@ -326,32 +354,55 @@ class SerialHandler(object):
         except serial.SerialException as e:
           logger.error('Error writing data: ', e)
           # Emit current thresholds since we couldn't update the values.
-          broadcast(['thresholds',
-            {'thresholds': self.profile_handler.GetCurThresholds()}])
+          broadcast(['thresholds', {
+            'slot': self.slot_id,
+            'thresholds': self.profile_handler.GetCurThresholds(),
+          }])
 
 
-profile_handler = ProfileHandler()
-initial_serial_port = load_serial_port_from_file() or SERIAL_PORT
-serial_handler = SerialHandler(profile_handler, port=initial_serial_port)
+profile_handlers = {
+  slot: ProfileHandler(slot, filename='profiles_{}.txt'.format(slot))
+  for slot in SLOT_IDS
+}
+serial_handlers = {
+  slot: SerialHandler(
+    slot,
+    profile_handlers[slot],
+    port=(load_serial_port_from_file(slot) or SERIAL_PORT),
+  )
+  for slot in SLOT_IDS
+}
 
 
-def update_threshold(values, index):
+def get_handler(slot):
+  if slot not in SLOT_IDS:
+    return None, None
+  return profile_handlers[slot], serial_handlers[slot]
+
+
+def update_threshold(slot, values, index):
+  _, serial_handler = get_handler(slot)
+  if not serial_handler:
+    return
   try:
     # Let the writer thread handle updating thresholds.
     threshold_cmd = '%d %d\n' % (sensor_numbers[index], values[index])
     serial_handler.write_queue.put(threshold_cmd, block=False)
   except queue.Full:
-    logger.error('Could not update thresholds. Queue full.')
+    logger.error('[%s] Could not update thresholds. Queue full.', slot)
 
 
-def save_thresholds():
+def save_thresholds(slot):
+  _, serial_handler = get_handler(slot)
+  if not serial_handler:
+    return
   try:
     serial_handler.write_queue.put('s\n', block=False)
   except queue.Full:
-    logger.error('Could not save thresholds to device. Queue full.')
+    logger.error('[%s] Could not save thresholds to device. Queue full.', slot)
 
 
-def get_serial_port_candidates():
+def get_serial_port_candidates(slot=None):
   if NO_SERIAL:
     return []
 
@@ -362,6 +413,12 @@ def get_serial_port_candidates():
   except Exception as e:
     logger.exception('Could not enumerate serial ports: %s', e)
     ports = []
+
+  selected_ports = {
+    slot_id: handler.port
+    for slot_id, handler in serial_handlers.items()
+    if handler.port
+  }
 
   for port_info in ports:
     path = port_info.device or ''
@@ -374,9 +431,16 @@ def get_serial_port_candidates():
       continue
 
     label = '{} ({})'.format(path, description) if description else path
+    in_use_by = ''
+    for slot_id, selected in selected_ports.items():
+      if selected == path and slot_id != slot:
+        in_use_by = slot_id
+        break
+
     candidates.append({
       'path': path,
       'label': label,
+      'in_use_by': in_use_by,
     })
 
   candidates.sort(key=lambda c: c['path'])
@@ -384,53 +448,97 @@ def get_serial_port_candidates():
   return candidates
 
 
-def set_serial_port(port):
-  save_serial_port_to_file(port)
+def set_serial_port(slot, port):
+  _, serial_handler = get_handler(slot)
+  if not serial_handler:
+    return
+
+  for other_slot, other_handler in serial_handlers.items():
+    if other_slot != slot and port and other_handler.port == port:
+      broadcast(['serial_port_error', {
+        'slot': slot,
+        'message': 'Port {} is already assigned to {}.'.format(port, other_slot.upper()),
+      }])
+      return
+
+  save_serial_port_to_file(slot, port)
   try:
     serial_handler.ChangePort(port)
   except Exception as e:
-    logger.exception('Error changing serial port to %s: %s', port, e)
+    logger.exception('[%s] Error changing serial port to %s: %s', slot, port, e)
   broadcast(['serial_port', {
+    'slot': slot,
     'serial_port': serial_handler.port,
-    'serial_port_candidates': get_serial_port_candidates(),
+    'serial_port_candidates': get_serial_port_candidates(slot),
   }])
+  refresh_serial_port_candidates()
 
 
-def refresh_serial_port_candidates():
-  broadcast(['serial_port_candidates', {
-    'serial_port_candidates': get_serial_port_candidates(),
-  }])
+def refresh_serial_port_candidates(slot=None):
+  if slot:
+    broadcast(['serial_port_candidates', {
+      'slot': slot,
+      'serial_port_candidates': get_serial_port_candidates(slot),
+    }])
+    return
+
+  for slot_id in SLOT_IDS:
+    broadcast(['serial_port_candidates', {
+      'slot': slot_id,
+      'serial_port_candidates': get_serial_port_candidates(slot_id),
+    }])
 
 
-def add_profile(profile_name, thresholds):
+def add_profile(slot, profile_name, thresholds):
+  profile_handler, _ = get_handler(slot)
+  if not profile_handler:
+    return
   profile_handler.AddProfile(profile_name, thresholds)
   # When we add a profile, we are using the currently loaded thresholds so we
   # don't need to explicitly apply anything.
 
 
-def remove_profile(profile_name):
+def remove_profile(slot, profile_name):
+  profile_handler, _ = get_handler(slot)
+  if not profile_handler:
+    return
   profile_handler.RemoveProfile(profile_name)
   # Need to apply the thresholds of the profile we've fallen back to.
   thresholds = profile_handler.GetCurThresholds()
   for i in range(len(thresholds)):
-    update_threshold(thresholds, i)
+    update_threshold(slot, thresholds, i)
 
 
-def change_profile(profile_name):
+def change_profile(slot, profile_name):
+  profile_handler, _ = get_handler(slot)
+  if not profile_handler:
+    return
   profile_handler.ChangeProfile(profile_name)
   # Need to apply the thresholds of the profile we've changed to.
   thresholds = profile_handler.GetCurThresholds()
   for i in range(len(thresholds)):
-    update_threshold(thresholds, i)
+    update_threshold(slot, thresholds, i)
 
 
-async def get_defaults(request):
-  return json_response({
+def get_slot_defaults(slot):
+  profile_handler, serial_handler = get_handler(slot)
+  if not profile_handler or not serial_handler:
+    return {}
+  return {
     'profiles': profile_handler.GetProfileNames(),
     'cur_profile': profile_handler.GetCurrentProfile(),
     'thresholds': profile_handler.GetCurThresholds(),
     'serial_port': serial_handler.port,
-    'serial_port_candidates': get_serial_port_candidates(),
+    'serial_port_candidates': get_serial_port_candidates(slot),
+  }
+
+
+async def get_defaults(request):
+  return json_response({
+    'slots': {
+      slot: get_slot_defaults(slot)
+      for slot in SLOT_IDS
+    }
   })
 
 
@@ -440,6 +548,8 @@ loop = None
 
 
 def broadcast(msg):
+  if not loop:
+    return
   with out_queues_lock:
     for q in out_queues:
       try:
@@ -455,24 +565,30 @@ async def get_ws(request):
   request.app['websockets'].append(ws)
   print('Client connected')
 
-  # The above does emit if there are differences, so have an extra for the
-  # case there are no differences.
-  await ws.send_json([
-    'thresholds',
-    {'thresholds': profile_handler.GetCurThresholds()},
-  ])
+  # The profile load may already have emitted, so force-send per-slot state.
+  for slot in SLOT_IDS:
+    profile_handler = profile_handlers[slot]
+    serial_handler = serial_handlers[slot]
+    await ws.send_json([
+      'thresholds',
+      {
+        'slot': slot,
+        'thresholds': profile_handler.GetCurThresholds(),
+      },
+    ])
 
-  # Potentially fetch any threshold values from the microcontroller that
-  # may be out of sync with our profiles.
-  try:
-    serial_handler.write_queue.put('t\n', block=False)
-  except queue.Full:
-    logger.warning('Could not queue threshold sync request. Queue full.')
+    # Potentially fetch threshold values from each microcontroller.
+    try:
+      serial_handler.write_queue.put('t\n', block=False)
+    except queue.Full:
+      logger.warning('[%s] Could not queue threshold sync request. Queue full.', slot)
 
   out_queue = asyncio.Queue(maxsize=100)
   with out_queues_lock:
     out_queues.add(out_queue)
 
+  queue_task = None
+  receive_task = None
   try:
     queue_task = asyncio.create_task(out_queue.get())
     receive_task = asyncio.create_task(ws.receive())
@@ -498,24 +614,26 @@ async def get_ws(request):
             action = data[0]
 
             if action == 'update_threshold':
-              values, index = data[1:]
-              update_threshold(values, index)
+              slot, values, index = data[1:]
+              update_threshold(slot, values, index)
             elif action == 'save_thresholds':
-              save_thresholds()
+              slot, = data[1:]
+              save_thresholds(slot)
             elif action == 'add_profile':
-              profile_name, thresholds = data[1:]
-              add_profile(profile_name, thresholds)
+              slot, profile_name, thresholds = data[1:]
+              add_profile(slot, profile_name, thresholds)
             elif action == 'remove_profile':
-              profile_name, = data[1:]
-              remove_profile(profile_name)
+              slot, profile_name = data[1:]
+              remove_profile(slot, profile_name)
             elif action == 'change_profile':
-              profile_name, = data[1:]
-              change_profile(profile_name)
+              slot, profile_name = data[1:]
+              change_profile(slot, profile_name)
             elif action == 'set_serial_port':
-              port, = data[1:]
-              set_serial_port(port)
+              slot, port = data[1:]
+              set_serial_port(slot, port)
             elif action == 'refresh_serial_port_candidates':
-              refresh_serial_port_candidates()
+              slot, = data[1:]
+              refresh_serial_port_candidates(slot)
           elif msg.type == WSMsgType.CLOSE:
             connected = False
             continue
@@ -528,10 +646,13 @@ async def get_ws(request):
     with out_queues_lock:
       out_queues.remove(out_queue)
 
-  queue_task.cancel()
-  receive_task.cancel()
+    if queue_task:
+      queue_task.cancel()
+    if receive_task:
+      receive_task.cancel()
 
   print('Client disconnected')
+  return ws
 
 
 build_dir = os.path.abspath(
@@ -546,13 +667,16 @@ async def on_startup(app):
   global loop
   loop = asyncio.get_event_loop()
 
-  profile_handler.MaybeLoad()
+  for slot in SLOT_IDS:
+    profile_handler = profile_handlers[slot]
+    serial_handler = serial_handlers[slot]
+    profile_handler.MaybeLoad()
 
-  read_thread = threading.Thread(target=serial_handler.Read)
-  read_thread.start()
+    read_thread = threading.Thread(target=serial_handler.Read)
+    read_thread.start()
 
-  write_thread = threading.Thread(target=serial_handler.Write)
-  write_thread.start()
+    write_thread = threading.Thread(target=serial_handler.Write)
+    write_thread.start()
 
 async def on_shutdown(app):
   for ws in app['websockets']:

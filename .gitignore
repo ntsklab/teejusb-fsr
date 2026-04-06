@@ -96,4 +96,4 @@ $RECYCLE.BIN/
 *.lnk
 
 # Runtime state files
-webui/server/serial_port.txt
+webui/server/serial_port_*.txt

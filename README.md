@@ -46,9 +46,10 @@ Follow a guide like [fsr-pad-guide](https://github.com/Sereni/fsr-pad-guide) or 
 1. Install [Python](https://www.python.org/downloads/). On Linux you can install Python with your distribution's package manager. On some systems you might have to additionally install the python3 header files (usually called `python3-dev` or similar).
 1. Install [Node](https://nodejs.org/en/download/)
     - Install [yarn](https://classic.yarnpkg.com/en/docs/install#windows-stable). A quick way to do this is with NPM: `npm install -g yarn`
-1. Start the WebUI, then select your device from the `Serial` dropdown.
+1. Start the WebUI, then select device ports from `Serial 1P` and `Serial 2P`.
   - The dropdown only shows devices matching hardcoded keywords in `SERIAL_PORT_KEYWORDS` within [server.py](./webui/server/server.py), so add your board naming pattern there if needed.
-  - The selected serial port is saved by the server and restored after restart.
+  - Selected ports are saved per slot (`1P` and `2P`) and restored after restart.
+  - Profiles are also managed independently per slot.
   - You also may need to [modify](https://github.com/teejusb/fsr/pull/1#discussion_r514585060) the `sensor_numbers` variable.
 1. Open a command prompt (or terminal) and navigate to `./webui/server` with `cd webui/server`
 1. Run `python -m venv venv` (you may need to replace `python` with `py` on Windows or potentially `python3` on Linux)
