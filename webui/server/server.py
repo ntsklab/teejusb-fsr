@@ -16,9 +16,10 @@ from aiohttp.web import json_response
 
 logger = logging.getLogger(__name__)
 
-# Edit this to match the serial port name shown in Arduino IDE
-SERIAL_PORT = "/dev/ttyACM0"
+# Start with no serial port selected. Pick one from the WebUI.
+SERIAL_PORT = ""
 HTTP_PORT = 5000
+SERIAL_PORT_FILENAME = 'serial_port.txt'
 
 # Candidate serial devices are filtered by these keywords.
 # Edit as needed for your hardware naming patterns.
@@ -43,6 +44,35 @@ sensor_numbers = range(num_sensors)
 # Used for developmental purposes. Set this to true when you just want to
 # emulate the serial device instead of actually connecting to one.
 NO_SERIAL = False
+
+
+def get_serial_port_file_path():
+  return os.path.join(os.path.dirname(__file__), SERIAL_PORT_FILENAME)
+
+
+def load_serial_port_from_file():
+  if NO_SERIAL:
+    return ''
+
+  try:
+    with open(get_serial_port_file_path(), 'r') as f:
+      return f.read().strip()
+  except FileNotFoundError:
+    return ''
+  except OSError as e:
+    logger.exception('Could not read serial port file: %s', e)
+    return ''
+
+
+def save_serial_port_to_file(port):
+  if NO_SERIAL:
+    return
+
+  try:
+    with open(get_serial_port_file_path(), 'w') as f:
+      f.write(port)
+  except OSError as e:
+    logger.exception('Could not write serial port file: %s', e)
 
 
 class ProfileHandler(object):
@@ -301,7 +331,8 @@ class SerialHandler(object):
 
 
 profile_handler = ProfileHandler()
-serial_handler = SerialHandler(profile_handler, port=SERIAL_PORT)
+initial_serial_port = load_serial_port_from_file() or SERIAL_PORT
+serial_handler = SerialHandler(profile_handler, port=initial_serial_port)
 
 
 def update_threshold(values, index):
@@ -354,6 +385,7 @@ def get_serial_port_candidates():
 
 
 def set_serial_port(port):
+  save_serial_port_to_file(port)
   try:
     serial_handler.ChangePort(port)
   except Exception as e:

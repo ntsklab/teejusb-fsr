@@ -94,3 +94,6 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+# Runtime state files
+webui/server/serial_port.txt
