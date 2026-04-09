@@ -128,13 +128,15 @@ uint8_t curButtonNum = 1;
 // some existing sensor pins so if you see some weird behavior it might be
 // because of this. Uncomment the following line to enable the feature.
 
-// #define ENABLE_LIGHTS
+#define ENABLE_LIGHTS
 
-// We don't want to use digital pins 0 and 1 as they're needed for Serial
-// communication so we start curLightPin from 2.
-// Automatically incremented when creating a new SensorState.
+// Digital pins used for LEDs, one per panel (sensor state).
+// On Arduino Leonardo, A6+ share non-contiguous digital pins,
+// so an explicit list is used instead of linear incrementing.
+// Order: panel 0..7
 #if defined(ENABLE_LIGHTS)
-  uint8_t curLightPin = 2;
+  const uint8_t kLightPins[] = {2, 3, 5, 7, 8, 9, 10, 11};
+  uint8_t curLightPinIndex = 0;
 #endif
 
 /*===========================================================================*/
@@ -227,7 +229,7 @@ class SensorState {
   SensorState()
       : num_sensors_(0),
         #if defined(ENABLE_LIGHTS)
-        kLightsPin(curLightPin++),
+        kLightsPin(kLightPins[curLightPinIndex++]),
         #endif
         buttonNum(curButtonNum++) {
     for (size_t i = 0; i < kMaxSharedSensors; ++i) {
