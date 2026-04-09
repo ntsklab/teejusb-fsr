@@ -405,10 +405,10 @@ function ValueMonitor(props) {
 }
 
 function ValueMonitors(props) {
-  const { numSensors, containerHeight } = props;
+  const { numSensors } = props;
   return (
     <header className="App-header">
-      <Container fluid style={{border: '1px solid white', height: containerHeight || '100vh'}}>
+      <Container fluid style={{border: '1px solid white', height: '100vh'}}>
         <Row className="ValueMonitor-row">
           {props.children}
         </Row>
@@ -435,7 +435,7 @@ function ValueMonitors(props) {
 
 function Plot(props) {
   const canvasRef = React.useRef(null);
-  const { numSensors, slot, webUIDataRef, containerHeight } = props;
+  const { numSensors, slot, webUIDataRef } = props;
   const [display, setDisplay] = useState(new Array(numSensors).fill(true));
   // `buttonNames` is only used if the number of sensors matches the number of button names.
   const buttonNames = ['Left', 'Down', 'Up', 'Right'];
@@ -626,15 +626,15 @@ function Plot(props) {
 
   return (
     <header className="App-header">
-      <Container fluid style={{border: '1px solid white', height: containerHeight || '100vh'}}>
+      <Container fluid style={{border: '1px solid white', height: '100vh'}}>
         <Row>
-          <Col style={{height: '12%', paddingTop: '1vh'}}>
+          <Col style={{height: '9vh', paddingTop: '2vh'}}>
             <span>Display: </span>
             {toggleButtons}
           </Col>
         </Row>
         <Row>
-          <Col style={{height: '84%'}}>
+          <Col style={{height: '86vh'}}>
             <canvas
               ref={canvasRef}
               style={{
@@ -772,6 +772,15 @@ function FSRWebUI(props) {
     emit(['refresh_serial_port_candidates', slot]);
   }
 
+  const slot = slotIds[0];
+  const numSensors = (defaults.slots[slot]?.thresholds || []).length;
+  const serialPort = serialPortBySlot[slot] || '';
+  const serialOptions = [...(serialPortCandidatesBySlot[slot] || [])];
+  const hasSelectedPortCandidate = serialOptions.some(option => option.path === serialPort);
+  const serialSelectValue = hasSelectedPortCandidate ? serialPort : '';
+  const profiles = profilesBySlot[slot] || [];
+  const activeProfile = activeProfileBySlot[slot] || '';
+
   return (
     <div className="App">
       <Router>
@@ -783,151 +792,87 @@ function FSRWebUI(props) {
                 <Nav.Link as={Link} to="/plot">Plot</Nav.Link>
               </Nav.Item>
             </Nav>
+            <Button alignRight onClick={() => SaveThresholds(slot)}>Save thresholds</Button>
             <Nav className="ml-auto">
-              {slotIds.map(slot => {
-                const serialPort = serialPortBySlot[slot] || '';
-                const serialOptions = [...(serialPortCandidatesBySlot[slot] || [])];
-                const hasSelectedPortCandidate = serialOptions.some(option => option.path === serialPort);
-                const serialSelectValue = hasSelectedPortCandidate ? serialPort : '';
-                const profiles = profilesBySlot[slot] || [];
-                const activeProfile = activeProfileBySlot[slot] || '';
-                return (
-                  <React.Fragment key={slot}>
-                    <Button
-                      style={{marginRight: '0.5rem'}}
-                      onClick={() => SaveThresholds(slot)}
-                    >
-                      Save {slot.toUpperCase()}
-                    </Button>
-                    <NavDropdown alignRight title={`Serial ${slot.toUpperCase()}`} id={`serial-port-dropdown-${slot}`}>
-                      <div style={{padding: "0.5rem", minWidth: "22rem"}}>
-                        <Form.Group controlId={`serialPortSelect-${slot}`} style={{marginBottom: "0.5rem"}}>
-                          <Form.Label style={{fontSize: "0.9rem", marginBottom: "0.25rem"}}>
-                            Device Port
-                          </Form.Label>
-                          <Form.Control as="select" value={serialSelectValue} onChange={(e) => ChangeSerialPort(slot, e)}>
-                            {serialOptions.length === 0 ? (
-                              <option value="">No matching serial devices found</option>
-                            ) : (
-                              <>
-                                {!hasSelectedPortCandidate && (
-                                  <option value="">Select a device port</option>
-                                )}
-                                {serialOptions.map(option => (
-                                  <option
-                                    key={option.path}
-                                    value={option.path}
-                                    disabled={Boolean(option.in_use_by)}
-                                  >
-                                    {option.label}
-                                    {option.in_use_by ? ` (used by ${option.in_use_by.toUpperCase()})` : ''}
-                                  </option>
-                                ))}
-                              </>
-                            )}
-                          </Form.Control>
-                        </Form.Group>
-                        {serialPortErrorBySlot[slot] && (
-                          <div style={{color: "#dc3545", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
-                            {serialPortErrorBySlot[slot]}
-                          </div>
-                        )}
-                        {serialOptions.length === 0 && (
-                          <div style={{color: "#6c757d", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
-                            対象機器のシリアルデバイスが見つかりません。接続後に Refresh devices を押してください。
-                          </div>
-                        )}
-                        <Button variant="outline-secondary" size="sm" onClick={() => RefreshSerialCandidates(slot)}>
-                          Refresh devices
-                        </Button>
-                      </div>
-                    </NavDropdown>
-                    <NavDropdown alignRight title={`Profile ${slot.toUpperCase()}`} id={`profile-dropdown-${slot}`}>
-                      {profiles.map((profile) => (
-                        <NavDropdown.Item
-                          key={`${slot}-${profile}`}
-                          style={{paddingLeft: "0.5rem"}}
-                          onClick={() => ChangeProfile(slot, profile)}
-                          active={profile === activeProfile}
-                        >
-                          <Button variant="light" onClick={(e) => RemoveProfile(e, slot, profile)}>X</Button>{' '}{profile}
-                        </NavDropdown.Item>
-                      ))}
-                      <NavDropdown.Divider />
-                      <Form inline onSubmit={(e) => e.preventDefault()}>
-                        <Form.Control
-                            onKeyDown={(e) => AddProfile(e, slot)}
-                            style={{marginLeft: "0.5rem", marginRight: "0.5rem"}}
-                            type="text"
-                            placeholder={`New Profile (${slot.toUpperCase()})`} />
-                      </Form>
-                    </NavDropdown>
-                  </React.Fragment>
-                );
-              })}
+              <NavDropdown alignRight title="Serial" id="serial-port-dropdown">
+                <div style={{padding: "0.5rem", minWidth: "22rem"}}>
+                  <Form.Group controlId="serialPortSelect" style={{marginBottom: "0.5rem"}}>
+                    <Form.Label style={{fontSize: "0.9rem", marginBottom: "0.25rem"}}>
+                      Device Port
+                    </Form.Label>
+                    <Form.Control as="select" value={serialSelectValue} onChange={(e) => ChangeSerialPort(slot, e)}>
+                      {serialOptions.length === 0 ? (
+                        <option value="">No matching serial devices found</option>
+                      ) : (
+                        <>
+                          {!hasSelectedPortCandidate && (
+                            <option value="">Select a device port</option>
+                          )}
+                          {serialOptions.map(option => (
+                            <option key={option.path} value={option.path}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </>
+                      )}
+                    </Form.Control>
+                  </Form.Group>
+                  {serialPortErrorBySlot[slot] && (
+                    <div style={{color: "#dc3545", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
+                      {serialPortErrorBySlot[slot]}
+                    </div>
+                  )}
+                  {serialOptions.length === 0 && (
+                    <div style={{color: "#6c757d", fontSize: "0.85rem", marginBottom: "0.5rem"}}>
+                      対象機器のシリアルデバイスが見つかりません。接続後に Refresh devices を押してください。
+                    </div>
+                  )}
+                  <Button variant="outline-secondary" size="sm" onClick={() => RefreshSerialCandidates(slot)}>
+                    Refresh devices
+                  </Button>
+                </div>
+              </NavDropdown>
+              <NavDropdown alignRight title="Profile" id="collasible-nav-dropdown">
+                {profiles.map((profile) => (
+                  <NavDropdown.Item
+                    key={profile}
+                    style={{paddingLeft: "0.5rem"}}
+                    onClick={() => ChangeProfile(slot, profile)}
+                    active={profile === activeProfile}
+                  >
+                    <Button variant="light" onClick={(e) => RemoveProfile(e, slot, profile)}>X</Button>{' '}{profile}
+                  </NavDropdown.Item>
+                ))}
+                <NavDropdown.Divider />
+                <Form inline onSubmit={(e) => e.preventDefault()}>
+                  <Form.Control
+                      onKeyDown={(e) => AddProfile(e, slot)}
+                      style={{marginLeft: "0.5rem", marginRight: "0.5rem"}}
+                      type="text"
+                      placeholder="New Profile" />
+                </Form>
+              </NavDropdown>
             </Nav>
           </Navbar>
-          {slotIds.map(slot => (
-            <Alert
-              key={`save-alert-${slot}`}
-              show={Boolean(showThresholdsSavedAlertBySlot[slot])}
-              variant="success"
-              dismissible
-              onClose={() => setShowThresholdsSavedAlertBySlot(prev => ({ ...prev, [slot]: false }))}
-            >
-              Saved thresholds to {slot.toUpperCase()} device successfully!
-            </Alert>
-          ))}
+          <Alert
+            show={Boolean(showThresholdsSavedAlertBySlot[slot])}
+            variant="success"
+            dismissible
+            onClose={() => setShowThresholdsSavedAlertBySlot(prev => ({ ...prev, [slot]: false }))}
+          >
+            Saved thresholds to device successfully!
+          </Alert>
         </>
         <Switch>
           <Route exact path="/">
-            <Container fluid style={{padding: 0}}>
-              <Row noGutters>
-                {slotIds.map(slot => {
-                  const numSensors = (defaults.slots[slot].thresholds || []).length;
-                  return (
-                    <Col key={`slot-monitor-${slot}`} xs={12} md={6}>
-                      <div style={{background: '#f8f9fa', color: '#333', padding: '0.35rem 0.75rem', border: '1px solid #ddd'}}>
-                        {slot.toUpperCase()} Monitor
-                      </div>
-                      <ValueMonitors numSensors={numSensors} containerHeight="46vh">
-                        {[...Array(numSensors).keys()].map(index => (
-                          <ValueMonitor
-                            emit={emit}
-                            slot={slot}
-                            index={index}
-                            key={`${slot}-monitor-${index}`}
-                            webUIDataRef={webUIDataRef}
-                          />)
-                        )}
-                      </ValueMonitors>
-                    </Col>
-                  );
-                })}
-              </Row>
-            </Container>
+            <ValueMonitors numSensors={numSensors}>
+              {[...Array(numSensors).keys()].map(index => (
+                <ValueMonitor emit={emit} slot={slot} index={index} key={index} webUIDataRef={webUIDataRef} />)
+              )}
+            </ValueMonitors>
           </Route>
           <Route path="/plot">
-            <Container fluid style={{padding: 0}}>
-              <Row noGutters>
-                {slotIds.map(slot => {
-                  const numSensors = (defaults.slots[slot].thresholds || []).length;
-                  return (
-                    <Col key={`slot-plot-${slot}`} xs={12} md={6}>
-                      <div style={{background: '#f8f9fa', color: '#333', padding: '0.35rem 0.75rem', border: '1px solid #ddd'}}>
-                        {slot.toUpperCase()} Plot
-                      </div>
-                      <Plot
-                        numSensors={numSensors}
-                        slot={slot}
-                        webUIDataRef={webUIDataRef}
-                        containerHeight="46vh"
-                      />
-                    </Col>
-                  );
-                })}
-              </Row>
-            </Container>
+            <Plot numSensors={numSensors} slot={slot} webUIDataRef={webUIDataRef} />
           </Route>
         </Switch>
       </Router>

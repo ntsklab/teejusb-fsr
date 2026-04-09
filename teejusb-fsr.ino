@@ -15,7 +15,7 @@
 // install Arduino Joystick Library from
 // https://github.com/MHeironimus/ArduinoJoystickLibrary/tree/master#installation-instructions
 // then uncomment the following line.
-// #define USE_ARDUINO_JOYSTICK_LIBRARY
+#define USE_ARDUINO_JOYSTICK_LIBRARY
 
 #if defined(CORE_TEENSY)
   // Use the Joystick library for Teensy
@@ -524,11 +524,16 @@ class Sensor {
 //   Sensor(A4),
 // };
 
+// 2 DDR pads (8 panels total): A0-A3 = Pad 1, A4-A7 = Pad 2
 Sensor kSensors[] = {
   Sensor(A0),
   Sensor(A1),
   Sensor(A2),
   Sensor(A3),
+  Sensor(A4),
+  Sensor(A5),
+  Sensor(A6),
+  Sensor(A7),
 };
 const size_t kNumSensors = sizeof(kSensors)/sizeof(Sensor);
 

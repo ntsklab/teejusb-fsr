@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Start with no serial port selected. Pick one from the WebUI.
 SERIAL_PORT = ""
 HTTP_PORT = 5000
-SLOT_IDS = ['1p', '2p']
+SLOT_IDS = ['1p']
 
 # Candidate serial devices are filtered by these keywords.
 # Edit as needed for your hardware naming patterns.
@@ -35,8 +35,8 @@ SERIAL_PORT_KEYWORDS = [
 # Event to tell the reader and writer threads to exit.
 thread_stop_event = threading.Event()
 
-# Amount of sensors.
-num_sensors = 4
+# Amount of sensors (8 panels: 2 DDR pads x 4 panels each, A0-A7).
+num_sensors = 8
 
 # Initialize sensor ids.
 sensor_numbers = range(num_sensors)
