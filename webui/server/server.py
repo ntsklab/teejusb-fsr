@@ -241,10 +241,16 @@ class SerialHandler(object):
     try:
       self.ser = serial.Serial(self.port, 115200, timeout=self.timeout)
       if self.ser:
-        # Apply currently loaded thresholds when the microcontroller connects.
-        for i, threshold in enumerate(self.profile_handler.GetCurThresholds()):
-          threshold_cmd = '%d %d\n' % (sensor_numbers[i], threshold)
-          self.write_queue.put(threshold_cmd, block=False)
+        cur_thresholds = self.profile_handler.GetCurThresholds()
+        if any(t != 0 for t in cur_thresholds):
+          # Apply currently loaded profile thresholds when the microcontroller connects.
+          for i, threshold in enumerate(cur_thresholds):
+            threshold_cmd = '%d %d\n' % (sensor_numbers[i], threshold)
+            self.write_queue.put(threshold_cmd, block=False)
+        else:
+          # No profile saved yet; fetch thresholds from the microcontroller's
+          # EEPROM instead of overwriting them with zeros.
+          self.write_queue.put('t\n', block=False)
     except queue.Full as e:
       logger.error('Could not set thresholds. Queue full.')
     except serial.SerialException as e:
