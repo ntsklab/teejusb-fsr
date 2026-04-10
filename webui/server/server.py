@@ -465,27 +465,23 @@ class SerialHandler(object):
             continue
 
         try:
-          # Send value-request only at ~30fps to minimize serial interrupts.
+          # Send value-request at the UI interval rate.
           now = time.time()
           if now - self._last_ui_time >= self._ui_interval:
             enqueued = self._enqueue_command('v\n', critical=False)
-            if not enqueued:
-              # Queue saturated with critical work; skip this poll frame.
-              time.sleep(self._ui_interval)
-              continue
-            # Update immediately so we don't re-queue while waiting for reply.
-            self._last_ui_time = now
-          else:
-            # Nothing to send yet; sleep until the next frame is due.
-            time.sleep(max(0, self._ui_interval - (now - self._last_ui_time)))
-            continue
+            if enqueued:
+              # Update immediately so we don't re-queue while waiting for reply.
+              self._last_ui_time = now
 
-          # Wait until we actually get the values.
-          # This will block the thread until it gets a newline
+          # Process all incoming lines immediately so the OS buffer never backs up.
           try:
             with self._ser_lock:
               ser = self.ser
               if not ser:
+                continue
+              # Fast non-blocking check to keep the polling loop running accurately
+              if ser.in_waiting == 0:
+                time.sleep(0.002)
                 continue
               raw_line = ser.readline()
             line = raw_line.decode('ascii').strip()

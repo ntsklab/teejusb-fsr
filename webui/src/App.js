@@ -112,6 +112,7 @@ function useWsConnection({ defaults, onCloseWs }) {
         pendingExpires[i] = 0;
       }
     }
+    slotData.latestValues = msg.values;
     if (slotData.curValues.length < MAX_SIZE) {
       slotData.curValues.push(msg.values);
     } else {
@@ -158,6 +159,7 @@ function useWsConnection({ defaults, onCloseWs }) {
       const thresholds = defaults.slots[slot].thresholds || [];
       webUIDataRef.current.slots[slot] = {
         curValues: [new Array(thresholds.length).fill(0)],
+        latestValues: new Array(thresholds.length).fill(0),
         oldest: 0,
         curThresholds: [...thresholds],
         pendingThresholdValues: new Array(thresholds.length).fill(null),
@@ -217,6 +219,7 @@ function ValueMonitor(props) {
   const getSlotData = useCallback(() => {
     return webUIDataRef.current.slots[slot] || {
       curValues: [],
+      latestValues: [],
       oldest: 0,
       curThresholds: [],
       pendingThresholdValues: [],
@@ -378,11 +381,12 @@ function ValueMonitor(props) {
     const render = (timestamp) => {
       const slotData = getSlotData();
       const curValues = slotData.curValues;
+      const latestValues = slotData.latestValues || [];
       const curThresholds = slotData.curThresholds;
       const pendingThresholds = slotData.pendingThresholdValues || [];
       const oldest = slotData.oldest;
 
-      if (curValues.length === 0 || curThresholds.length <= index) {
+      if (curThresholds.length <= index) {
         requestId = requestAnimationFrame(render);
         return;
       }
@@ -393,10 +397,10 @@ function ValueMonitor(props) {
       }
       previousTimestamp = timestamp;
 
-      // Get the latest value. This is either last element in the list, or based off of
-      // the circular array.
       let latestValue = 0;
-      if (curValues.length < MAX_SIZE) {
+      if (latestValues.length > index) {
+        latestValue = latestValues[index];
+      } else if (curValues.length < MAX_SIZE) {
         latestValue = curValues[curValues.length-1][index];
       } else {
         latestValue = curValues[((oldest - 1) % MAX_SIZE + MAX_SIZE) % MAX_SIZE][index];
