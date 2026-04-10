@@ -81,6 +81,16 @@ const unsigned long LED_ERROR_TOGGLE_MS = 80;
 // Profile storage filename on LittleFS.
 #define PROFILES_FILE "/profiles_1p.txt"
 
+// [public] profile stored separately — applied on every boot.
+#define PUBLIC_PROFILE_FILE "/public_profile.txt"
+#define PUBLIC_PROFILE_NAME  "[public]"
+
+// Max number of user-created profiles (NOT counting [public]).
+#define MAX_USER_PROFILES 10
+
+// Hardcoded admin password required to overwrite [public] profile.
+#define ADMIN_PASSWORD "admin123"
+
 // Sensor number mapping (logical index -> physical Arduino sensor number).
 // Change this if your sensor wiring order differs from 0-7.
 static const int sensorNumbers[NUM_SENSORS] = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -97,13 +107,16 @@ AsyncWebSocket ws("/ws");
 struct Profile {
   String name;
   int thresholds[NUM_SENSORS];
+  uint32_t seq;  // monotonically increasing use counter; higher = more recently used
 };
 
 #define MAX_PROFILES 20
 static Profile profiles[MAX_PROFILES];
 static int profileCount = 0;
+static uint32_t nextSeq = 1;  // next sequence number to assign
 static String currentProfileName = "";
 static int currentThresholds[NUM_SENSORS] = {0};
+static int publicThresholds[NUM_SENSORS]  = {0};
 
 // --- Stats ---
 
@@ -277,12 +290,21 @@ static void loadProfiles() {
     line.trim();
     if (line.isEmpty()) continue;
 
-    // Format: "profileName t0 t1 t2 ... t7"
+    // Format: "profileName seq t0 t1 t2 ... t7"
     int firstSpace = line.indexOf(' ');
     if (firstSpace < 0) continue;
 
     profiles[profileCount].name = line.substring(0, firstSpace);
     String rest = line.substring(firstSpace + 1);
+
+    // Parse seq (first token after name).
+    int seqEnd = rest.indexOf(' ');
+    if (seqEnd < 0) continue;
+    uint32_t seq = (uint32_t)rest.substring(0, seqEnd).toInt();
+    profiles[profileCount].seq = seq;
+    if (seq >= nextSeq) nextSeq = seq + 1;
+    rest = rest.substring(seqEnd + 1);
+
     int si = 0, pos = 0;
     while (si < NUM_SENSORS && pos < (int)rest.length()) {
       int nextSpace = rest.indexOf(' ', pos);
@@ -313,13 +335,57 @@ static void saveProfiles() {
   File f = LittleFS.open(PROFILES_FILE, "w");
   if (!f) return;
   for (int i = 0; i < profileCount; i++) {
+    // Format: "profileName seq t0 t1 t2 ... t7"
     f.print(profiles[i].name);
+    f.print(' ');
+    f.print(profiles[i].seq);
     for (int j = 0; j < NUM_SENSORS; j++) {
       f.print(' ');
       f.print(profiles[i].thresholds[j]);
     }
     f.print('\n');
   }
+  f.close();
+}
+
+// ----- [public] profile (boot default, admin-write-only) -----
+
+static void loadPublicProfile() {
+  memset(publicThresholds, 0, sizeof(publicThresholds));
+  if (!LittleFS.exists(PUBLIC_PROFILE_FILE)) {
+    Serial.println("[public] profile not found, using all-zero defaults");
+    return;
+  }
+  File f = LittleFS.open(PUBLIC_PROFILE_FILE, "r");
+  if (!f) return;
+  String line = f.readStringUntil('\n');
+  f.close();
+  line.trim();
+  if (line.isEmpty()) return;
+  int idx = 0, pos = 0;
+  while (idx < NUM_SENSORS && pos < (int)line.length()) {
+    int nextSpace = line.indexOf(' ', pos);
+    String val;
+    if (nextSpace < 0) {
+      val = line.substring(pos);
+      pos  = line.length();
+    } else {
+      val = line.substring(pos, nextSpace);
+      pos  = nextSpace + 1;
+    }
+    publicThresholds[idx++] = val.toInt();
+  }
+  Serial.println("[public] profile loaded");
+}
+
+static void savePublicProfile() {
+  File f = LittleFS.open(PUBLIC_PROFILE_FILE, "w");
+  if (!f) return;
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    if (i > 0) f.print(' ');
+    f.print(publicThresholds[i]);
+  }
+  f.print('\n');
   f.close();
 }
 
@@ -349,6 +415,7 @@ static void broadcastProfiles() {
   JsonObject msg = doc[1].to<JsonObject>();
   msg["slot"] = SLOT_ID;
   JsonArray arr = msg["profiles"].to<JsonArray>();
+  arr.add(PUBLIC_PROFILE_NAME);                         // always first
   for (int i = 0; i < profileCount; i++) arr.add(profiles[i].name);
   String out;
   serializeJson(doc, out);
@@ -423,10 +490,18 @@ static void addSerialPortInfo(JsonObject& slot) {
 static void sendThresholdToArduino(int index, int value);
 
 static void changeProfile(const String& name) {
+  if (name == PUBLIC_PROFILE_NAME) {
+    currentProfileName = PUBLIC_PROFILE_NAME;
+    memcpy(currentThresholds, publicThresholds, sizeof(currentThresholds));
+    broadcastThresholds();
+    broadcastCurrentProfile();
+    return;
+  }
   int idx = findProfile(name);
   if (idx >= 0) {
     currentProfileName = profiles[idx].name;
     memcpy(currentThresholds, profiles[idx].thresholds, sizeof(currentThresholds));
+    profiles[idx].seq = nextSeq++;  // mark as recently used
   } else {
     currentProfileName = "";
     memset(currentThresholds, 0, sizeof(currentThresholds));
@@ -438,11 +513,23 @@ static void changeProfile(const String& name) {
 static void addProfile(const String& name, const int* thresholds) {
   int existing = findProfile(name);
   if (existing >= 0) {
+    // Update existing profile in place.
     memcpy(profiles[existing].thresholds, thresholds, sizeof(int) * NUM_SENSORS);
+    profiles[existing].seq = nextSeq++;
   } else {
-    if (profileCount >= MAX_PROFILES) return;
+    if (profileCount >= MAX_USER_PROFILES) {
+      // Evict the least recently used profile (lowest seq).
+      int lruIdx = 0;
+      for (int i = 1; i < profileCount; i++) {
+        if (profiles[i].seq < profiles[lruIdx].seq) lruIdx = i;
+      }
+      Serial.printf("LRU evict: %s\n", profiles[lruIdx].name.c_str());
+      for (int i = lruIdx; i < profileCount - 1; i++) profiles[i] = profiles[i + 1];
+      profileCount--;
+    }
     profiles[profileCount].name = name;
     memcpy(profiles[profileCount].thresholds, thresholds, sizeof(int) * NUM_SENSORS);
+    profiles[profileCount].seq = nextSeq++;
     profileCount++;
   }
   currentProfileName = name;
@@ -649,6 +736,8 @@ static void onWsEvent(AsyncWebSocket* /*server*/, AsyncWebSocketClient* client,
     else if (action == "add_profile") {
       // ["add_profile", slot, name, [thresholds...]]
       String name = doc[2].as<String>();
+      if (name == PUBLIC_PROFILE_NAME) return;         // [public] is managed by admin only
+      // No hard limit check here: addProfile() evicts LRU automatically.
       JsonArray threshArr = doc[3].as<JsonArray>();
       int th[NUM_SENSORS] = {0};
       for (int i = 0; i < NUM_SENSORS && i < (int)threshArr.size(); i++) {
@@ -658,7 +747,41 @@ static void onWsEvent(AsyncWebSocket* /*server*/, AsyncWebSocketClient* client,
     }
     else if (action == "remove_profile") {
       String name = doc[2].as<String>();
+      if (name == PUBLIC_PROFILE_NAME) return;         // [public] cannot be deleted
       removeProfile(name);
+    }
+    else if (action == "update_public_profile") {
+      // ["update_public_profile", slot, admin_password, [thresholds...]]
+      String password = doc[2].as<String>();
+      if (password != ADMIN_PASSWORD) {
+        JsonDocument errDoc;
+        errDoc[0] = "admin_auth_error";
+        JsonObject errMsg = errDoc[1].to<JsonObject>();
+        errMsg["slot"] = SLOT_ID;
+        errMsg["message"] = "パスワードが違います";
+        String eout;
+        serializeJson(errDoc, eout);
+        client->text(eout);
+        return;
+      }
+      JsonArray threshArr = doc[3].as<JsonArray>();
+      for (int i = 0; i < NUM_SENSORS && i < (int)threshArr.size(); i++) {
+        publicThresholds[i] = threshArr[i].as<int>();
+      }
+      savePublicProfile();
+      // If [public] is currently active, update live thresholds too.
+      if (currentProfileName == PUBLIC_PROFILE_NAME) {
+        memcpy(currentThresholds, publicThresholds, sizeof(currentThresholds));
+        broadcastThresholds();
+      }
+      // Notify client of success.
+      JsonDocument okDoc;
+      okDoc[0] = "public_profile_updated";
+      okDoc[1]["slot"] = SLOT_ID;
+      String okout;
+      serializeJson(okDoc, okout);
+      client->text(okout);
+      broadcastProfiles();
     }
     else if (action == "change_profile") {
       String name = doc[2].as<String>();
@@ -699,6 +822,7 @@ static void handleDefaults(AsyncWebServerRequest* request) {
   JsonObject slot = slots[SLOT_ID].to<JsonObject>();
 
   JsonArray profileArr = slot["profiles"].to<JsonArray>();
+  profileArr.add(PUBLIC_PROFILE_NAME);  // always present
   for (int i = 0; i < profileCount; i++) profileArr.add(profiles[i].name);
 
   slot["cur_profile"] = currentProfileName;
@@ -737,6 +861,11 @@ void setup() {
 
   // Load saved profiles.
   loadProfiles();
+
+  // Load [public] profile and apply it on boot (always).
+  loadPublicProfile();
+  currentProfileName = PUBLIC_PROFILE_NAME;
+  memcpy(currentThresholds, publicThresholds, sizeof(currentThresholds));
 
   // --- WiFi ---
   // Prefer STA. If no candidate succeeds, fallback to AP mode.

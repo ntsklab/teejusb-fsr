@@ -11,9 +11,10 @@ import Container from 'react-bootstrap/Container'
 import Row from 'react-bootstrap/Row'
 import Col from 'react-bootstrap/Col'
 
-import Form from 'react-bootstrap/Form'
-import Button from 'react-bootstrap/Button'
-import ToggleButton from 'react-bootstrap/ToggleButton'
+import Form from 'react-bootstrap/Form';
+import Button from 'react-bootstrap/Button';
+import Modal from 'react-bootstrap/Modal';
+import ToggleButton from 'react-bootstrap/ToggleButton';
 import Spinner from 'react-bootstrap/Spinner'
 
 import {
@@ -26,6 +27,10 @@ import {
 // Maximum number of historical sensor values to retain
 const MAX_SIZE = 1000;
 const THRESHOLD_ACK_TIMEOUT_MS = 3000;
+
+// The built-in profile that is applied on every boot.
+// Only admins may overwrite it.
+const PUBLIC_PROFILE = '[public]';
 
 // Returned `defaults` property will be undefined if the defaults are loading or reloading.
 // Call `reloadDefaults` to clear the defaults and reload from the server.
@@ -787,6 +792,11 @@ function FSRWebUI(props) {
       return acc;
     }, {})
   );
+
+  // Admin modal for updating [public] profile.
+  const [adminModalVisible, setAdminModalVisible] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminError, setAdminError] = useState('');
   const [serialPortErrorBySlot, setSerialPortErrorBySlot] = useState(
     slotIds.reduce((acc, slot) => {
       acc[slot] = '';
@@ -841,6 +851,14 @@ function FSRWebUI(props) {
         [msg.slot]: { ...(prev[msg.slot] || {}), ...msg },
       }));
     };
+    wsCallbacks.admin_auth_error = function(msg) {
+      setAdminError(msg.message || 'パスワードが違います');
+    };
+    wsCallbacks.public_profile_updated = function(/*msg*/) {
+      setAdminModalVisible(false);
+      setAdminPassword('');
+      setAdminError('');
+    };
 
     return () => {
       delete wsCallbacks.get_profiles;
@@ -850,15 +868,20 @@ function FSRWebUI(props) {
       delete wsCallbacks.serial_port_candidates;
       delete wsCallbacks.serial_port_error;
       delete wsCallbacks.stats;
+      delete wsCallbacks.admin_auth_error;
+      delete wsCallbacks.public_profile_updated;
     };
   }, [wsCallbacksRef]);
 
   function AddProfile(e, slot) {
     // Only add a profile on the enter key.
     if (e.keyCode === 13) {
-      emit(['add_profile', slot, e.target.value, getSlotData(slot).curThresholds]);
+      const name = e.target.value.trim();
+      if (!name || name === PUBLIC_PROFILE) return false;
+      // No client-side limit: firmware will evict the LRU profile if full.
+      emit(['add_profile', slot, name, getSlotData(slot).curThresholds]);
       // Reset the text box.
-      e.target.value = "";
+      e.target.value = '';
     }
     return false;
   }
@@ -897,6 +920,7 @@ function FSRWebUI(props) {
   const hasSelectedPortCandidate = serialOptions.some(option => option.path === serialPort);
   const serialSelectValue = hasSelectedPortCandidate ? serialPort : '';
   const profiles = profilesBySlot[slot] || [];
+  const userProfiles = profiles.filter(p => p !== PUBLIC_PROFILE);
   const activeProfile = activeProfileBySlot[slot] || '';
 
   return (
@@ -964,7 +988,17 @@ function FSRWebUI(props) {
                 </div>
               </NavDropdown>
               <NavDropdown alignRight title="Profile" id="collasible-nav-dropdown">
-                {profiles.map((profile) => (
+                {/* [public] プロファイル: 割り当て可能、削除不可 */}
+                <NavDropdown.Item
+                  style={{paddingLeft: "0.5rem"}}
+                  onClick={() => ChangeProfile(slot, PUBLIC_PROFILE)}
+                  active={PUBLIC_PROFILE === activeProfile}
+                >
+                  <span style={{marginRight: '0.4rem'}}>🔒</span>{PUBLIC_PROFILE}
+                </NavDropdown.Item>
+
+                {/* ユーザプロファイル */}
+                {userProfiles.map((profile) => (
                   <NavDropdown.Item
                     key={profile}
                     style={{paddingLeft: "0.5rem"}}
@@ -974,13 +1008,32 @@ function FSRWebUI(props) {
                     <Button variant="light" onClick={(e) => RemoveProfile(e, slot, profile)}>X</Button>{' '}{profile}
                   </NavDropdown.Item>
                 ))}
+
                 <NavDropdown.Divider />
+
+                {/* [public] 更新 (管理者専用) */}
+                <NavDropdown.Item
+                  style={{paddingLeft: "0.5rem", color: '#856404'}}
+                  onClick={() => {
+                    setAdminError('');
+                    setAdminPassword('');
+                    setAdminModalVisible(true);
+                  }}
+                >
+                  🔑 [public] を更新…
+                </NavDropdown.Item>
+
+                <NavDropdown.Divider />
+
                 <Form inline onSubmit={(e) => e.preventDefault()}>
                   <Form.Control
                       onKeyDown={(e) => AddProfile(e, slot)}
-                      style={{marginLeft: "0.5rem", marginRight: "0.5rem"}}
+                      style={{marginLeft: "0.5rem", marginRight: "0.25rem"}}
                       type="text"
-                      placeholder="New Profile" />
+                      placeholder={userProfiles.length >= 10 ? 'New Profile (LRU退去)' : 'New Profile'} />
+                  <small style={{color: userProfiles.length >= 10 ? '#dc6c00' : '#6c757d', fontSize: '0.75rem'}}>
+                    {userProfiles.length}/10
+                  </small>
                 </Form>
               </NavDropdown>
             </Nav>
@@ -993,6 +1046,50 @@ function FSRWebUI(props) {
           >
             Saved thresholds to device successfully!
           </Alert>
+
+          {/* 管理者パスワードモーダル: [public] プロファイル更新用 */}
+          <Modal show={adminModalVisible} onHide={() => setAdminModalVisible(false)}>
+            <Modal.Header closeButton>
+              <Modal.Title>[public] プロファイルの更新</Modal.Title>
+            </Modal.Header>
+            <Modal.Body>
+              <p>現在画面のしきい値を [public] プロファイルとして保存します。</p>
+              <Form.Group controlId="adminPasswordInput">
+                <Form.Label>管理者パスワード</Form.Label>
+                <Form.Control
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => { setAdminPassword(e.target.value); setAdminError(''); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && adminPassword) {
+                      emit(['update_public_profile', slot, adminPassword,
+                            [...getSlotData(slot).curThresholds]]);
+                    }
+                  }}
+                  placeholder="パスワードを入力"
+                  autoFocus
+                />
+              </Form.Group>
+              {adminError && (
+                <div style={{color: '#dc3545', marginTop: '0.5rem'}}>{adminError}</div>
+              )}
+            </Modal.Body>
+            <Modal.Footer>
+              <Button variant="secondary" onClick={() => setAdminModalVisible(false)}>
+                キャンセル
+              </Button>
+              <Button
+                variant="warning"
+                disabled={!adminPassword}
+                onClick={() =>
+                  emit(['update_public_profile', slot, adminPassword,
+                        [...getSlotData(slot).curThresholds]])
+                }
+              >
+                更新
+              </Button>
+            </Modal.Footer>
+          </Modal>
         </>
         <Switch>
           <Route exact path="/">
