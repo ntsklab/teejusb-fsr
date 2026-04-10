@@ -209,13 +209,13 @@ class SerialHandler(object):
   Attributes:
     ser: Serial, the serial object opened by this class.
     port: string, the path/name of the serial object to open.
-    timeout: int, the time in seconds indicating the timeout for serial
+    timeout: float, the time in seconds indicating the timeout for serial
       operations.
     write_queue: Queue, a queue object read by the writer thread
     profile_handler: ProfileHandler, the global profile_handler used to update
       the thresholds
   """
-  def __init__(self, slot_id, profile_handler, port='', timeout=1):
+  def __init__(self, slot_id, profile_handler, port='', timeout=0.05):
     self.slot_id = slot_id
     self.ser = None
     self.port = port
@@ -233,15 +233,17 @@ class SerialHandler(object):
     self._queue_lock = threading.Lock()
     # Count consecutive read failures (timeouts or bad data).
     # After _max_consecutive_errors failures, force a reconnect.
+    # Keep this fairly high since timeout is intentionally short for low latency.
     self._consecutive_read_errors = 0
-    self._max_consecutive_errors = 10
+    self._max_consecutive_errors = 60
 
     # Stats tracking
     self._v_count = 0
     self._last_stat_time = time.time()
-    # Throttle WebUI updates to ~30fps
+    # Throttle WebUI updates to ~60fps.
+    # Higher frequency reduces perceived input-to-UI lag while staying lightweight.
     self._last_ui_time = 0.0
-    self._ui_interval = 1.0 / 30.0
+    self._ui_interval = 1.0 / 60.0
 
     # Use this to store the values when emulating serial so the graph isn't too
     # jumpy. Only used when NO_SERIAL is true.
@@ -823,12 +825,34 @@ loop = None
 def broadcast(msg):
   if not loop:
     return
-  with out_queues_lock:
-    for q in out_queues:
+
+  # Values/stats are realtime signals. If a client is slower than producer,
+  # keep latency low by dropping older queued realtime packets.
+  is_realtime = False
+  if isinstance(msg, (list, tuple)) and msg:
+    is_realtime = msg[0] in ('values', 'stats')
+
+  def enqueue_with_policy(q, m, drop_old_realtime):
+    if not drop_old_realtime:
       try:
-        loop.call_soon_threadsafe(q.put_nowait, msg)
+        q.put_nowait(m)
       except asyncio.queues.QueueFull:
         pass
+      return
+
+    while True:
+      try:
+        q.put_nowait(m)
+        return
+      except asyncio.queues.QueueFull:
+        try:
+          q.get_nowait()
+        except asyncio.queues.QueueEmpty:
+          return
+
+  with out_queues_lock:
+    for q in out_queues:
+      loop.call_soon_threadsafe(enqueue_with_policy, q, msg, is_realtime)
 
 
 async def get_ws(request):
@@ -853,7 +877,8 @@ async def get_ws(request):
     # Potentially fetch threshold values from each microcontroller.
     serial_handler.EnqueueCommand('t\n', critical=True)
 
-  out_queue = asyncio.Queue(maxsize=100)
+  # Keep per-client queue very small to bound worst-case UI lag.
+  out_queue = asyncio.Queue(maxsize=8)
   with out_queues_lock:
     out_queues.add(out_queue)
 
