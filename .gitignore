@@ -99,3 +99,10 @@ $RECYCLE.BIN/
 webui/server/serial_port_*.txt
 webui/server/profiles_*.txt
 webui/server/profiles.txt
+
+# Local WiFi credentials for ESP32 bridge
+esp32c6-bridge/wifi_secrets.h
+
+esp32c6-bridge/data/*
+esp32c6-bridge/mklittlefs.bin
+

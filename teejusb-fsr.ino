@@ -17,6 +17,18 @@
 // then uncomment the following line.
 #define USE_ARDUINO_JOYSTICK_LIBRARY
 
+// Uncomment the following line to use Serial1 (hardware UART pins 0/1)
+// for the command protocol instead of USB Serial.
+// This is required when USB is connected to a game controller converter
+// and an ESP32-C6 WiFi bridge is connected to the UART pins.
+#define USE_SERIAL1_FOR_COMMANDS
+
+#if defined(USE_SERIAL1_FOR_COMMANDS)
+  #define CMD_SERIAL Serial1
+#else
+  #define CMD_SERIAL Serial
+#endif
+
 #if defined(CORE_TEENSY)
   // Use the Joystick library for Teensy
   void ButtonStart() {
@@ -576,15 +588,15 @@ class EepromProcessor {
         last_used_save_slot_++;
       }
       // Never block gameplay because of optional serial ACK output.
-      if (!Serial || Serial.availableForWrite() < 48) {
+      if (!CMD_SERIAL || CMD_SERIAL.availableForWrite() < 48) {
         return;
       }
-      Serial.print("s");
+      CMD_SERIAL.print("s");
       for (size_t i = 0; i < kNumSensors; ++i) {
-        Serial.print(" ");
-        Serial.print(kSensors[i].GetThreshold());
+        CMD_SERIAL.print(" ");
+        CMD_SERIAL.print(kSensors[i].GetThreshold());
       }
-      Serial.print("\n");
+      CMD_SERIAL.print("\n");
     }
 
     void LoadThresholds() {
@@ -664,15 +676,15 @@ class EepromProcessor {
 class SerialProcessor {
  public:
    void Init(long baud_rate) {
-    Serial.begin(baud_rate);
+    CMD_SERIAL.begin(baud_rate);
     // Keep readBytesUntil from blocking for long when packets are incomplete.
-    Serial.setTimeout(2);
+    CMD_SERIAL.setTimeout(2);
   }
 
   void CheckAndMaybeProcessData() {
     size_t processed = 0;
-    while (Serial.available() > 0 && processed < kMaxCommandsPerLoop) {
-      size_t bytes_read = Serial.readBytesUntil(
+    while (CMD_SERIAL.available() > 0 && processed < kMaxCommandsPerLoop) {
+      size_t bytes_read = CMD_SERIAL.readBytesUntil(
           '\n', buffer_, kBufferSize - 1);
       buffer_[bytes_read] = '\0';
 
@@ -738,33 +750,33 @@ class SerialProcessor {
     if (!CanWriteResponse(kLargeResponseBytes)) {
       return;
     }
-    Serial.print("v");
+    CMD_SERIAL.print("v");
     for (size_t i = 0; i < kNumSensors; ++i) {
-      Serial.print(" ");
-      Serial.print(kSensors[i].GetCurValue());
+      CMD_SERIAL.print(" ");
+      CMD_SERIAL.print(kSensors[i].GetCurValue());
     }
-    Serial.print("\n");
+    CMD_SERIAL.print("\n");
   }
 
   void PrintThresholds() {
     if (!CanWriteResponse(kLargeResponseBytes)) {
       return;
     }
-    Serial.print("t");
+    CMD_SERIAL.print("t");
     for (size_t i = 0; i < kNumSensors; ++i) {
-      Serial.print(" ");
-      Serial.print(kSensors[i].GetThreshold());
+      CMD_SERIAL.print(" ");
+      CMD_SERIAL.print(kSensors[i].GetThreshold());
     }
-    Serial.print("\n");
+    CMD_SERIAL.print("\n");
   }
 
   void PrintLoopTime(long loop_time) {
     if (!CanWriteResponse(kSmallResponseBytes)) {
       return;
     }
-    Serial.print("r ");
-    Serial.print(loop_time);
-    Serial.print("\n");
+    CMD_SERIAL.print("r ");
+    CMD_SERIAL.print(loop_time);
+    CMD_SERIAL.print("\n");
   }
 
   void LoadThresholdsFromEeprom() {
@@ -773,7 +785,7 @@ class SerialProcessor {
 
  private:
    bool CanWriteResponse(size_t bytes_needed) {
-     return Serial && Serial.availableForWrite() >= bytes_needed;
+     return CMD_SERIAL && CMD_SERIAL.availableForWrite() >= bytes_needed;
    }
 
    static const size_t kMaxCommandsPerLoop = 4;
