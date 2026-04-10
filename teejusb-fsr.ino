@@ -81,10 +81,16 @@
     Joystick.begin(false);
   }
   void ButtonPress(uint8_t button_num) {
-    Joystick.pressButton(button_num);
+    if (button_num == 0) {
+      return;
+    }
+    Joystick.pressButton(button_num - 1);
   }
   void ButtonRelease(uint8_t button_num) {
-    Joystick.releaseButton(button_num);
+    if (button_num == 0) {
+      return;
+    }
+    Joystick.releaseButton(button_num - 1);
   }
   bool ButtonSend() {
     Joystick.sendState();
@@ -121,6 +127,8 @@ const size_t kMaxSharedSensors = 2;
 // Button numbers should start with 1 (Button0 is not a valid Joystick input).
 // Automatically incremented when creating a new SensorState.
 uint8_t curButtonNum = 1;
+// Forward declaration so SerialProcessor can reference loopTime.
+extern long loopTime;
 
 /*===========================================================================*/
 
@@ -128,7 +136,7 @@ uint8_t curButtonNum = 1;
 // some existing sensor pins so if you see some weird behavior it might be
 // because of this. Uncomment the following line to enable the feature.
 
-#define ENABLE_LIGHTS
+// #define ENABLE_LIGHTS
 
 // Digital pins used for LEDs, one per panel (sensor state).
 // On Arduino Leonardo, A6+ share non-contiguous digital pins,
@@ -245,7 +253,7 @@ class SensorState {
     if (initialized_) {
       return;
     }
-    buttonNum = curButtonNum++;
+    // buttonNum is already assigned in the constructor initializer list.
     initialized_ = true;
   }
 
@@ -567,6 +575,10 @@ class EepromProcessor {
         // Increment only once the write is complete.
         last_used_save_slot_++;
       }
+      // Never block gameplay because of optional serial ACK output.
+      if (!Serial || Serial.availableForWrite() < 48) {
+        return;
+      }
       Serial.print("s");
       for (size_t i = 0; i < kNumSensors; ++i) {
         Serial.print(" ");
@@ -653,15 +665,19 @@ class SerialProcessor {
  public:
    void Init(long baud_rate) {
     Serial.begin(baud_rate);
+    // Keep readBytesUntil from blocking for long when packets are incomplete.
+    Serial.setTimeout(2);
   }
 
   void CheckAndMaybeProcessData() {
-    while (Serial.available() > 0) {
+    size_t processed = 0;
+    while (Serial.available() > 0 && processed < kMaxCommandsPerLoop) {
       size_t bytes_read = Serial.readBytesUntil(
           '\n', buffer_, kBufferSize - 1);
       buffer_[bytes_read] = '\0';
 
-      if (bytes_read == 0) { return; }
+      if (bytes_read == 0) { break; }
+      ++processed;
  
       switch(buffer_[0]) {
         case 'o':
@@ -680,8 +696,13 @@ class SerialProcessor {
         case 'S':
           eeprom_processor_.SaveThresholds();
           break;
+        case 'r':
+        case 'R':
+          PrintLoopTime(loopTime);
+          break;
         case '0' ... '9': // Case ranges are non-standard but work in gcc.
           UpdateAndPrintThreshold(bytes_read);
+          break;
         default:
           break;
       }
@@ -714,6 +735,9 @@ class SerialProcessor {
   }
 
   void PrintValues() {
+    if (!CanWriteResponse(kLargeResponseBytes)) {
+      return;
+    }
     Serial.print("v");
     for (size_t i = 0; i < kNumSensors; ++i) {
       Serial.print(" ");
@@ -723,6 +747,9 @@ class SerialProcessor {
   }
 
   void PrintThresholds() {
+    if (!CanWriteResponse(kLargeResponseBytes)) {
+      return;
+    }
     Serial.print("t");
     for (size_t i = 0; i < kNumSensors; ++i) {
       Serial.print(" ");
@@ -731,11 +758,27 @@ class SerialProcessor {
     Serial.print("\n");
   }
 
+  void PrintLoopTime(long loop_time) {
+    if (!CanWriteResponse(kSmallResponseBytes)) {
+      return;
+    }
+    Serial.print("r ");
+    Serial.print(loop_time);
+    Serial.print("\n");
+  }
+
   void LoadThresholdsFromEeprom() {
     eeprom_processor_.LoadThresholds();
   }
 
  private:
+   bool CanWriteResponse(size_t bytes_needed) {
+     return Serial && Serial.availableForWrite() >= bytes_needed;
+   }
+
+   static const size_t kMaxCommandsPerLoop = 4;
+   static const size_t kLargeResponseBytes = 48;
+   static const size_t kSmallResponseBytes = 16;
    static const size_t kBufferSize = 64;
    char buffer_[kBufferSize];
 

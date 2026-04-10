@@ -14,6 +14,7 @@ import Col from 'react-bootstrap/Col'
 import Form from 'react-bootstrap/Form'
 import Button from 'react-bootstrap/Button'
 import ToggleButton from 'react-bootstrap/ToggleButton'
+import Spinner from 'react-bootstrap/Spinner'
 
 import {
   BrowserRouter as Router,
@@ -24,6 +25,7 @@ import {
 
 // Maximum number of historical sensor values to retain
 const MAX_SIZE = 1000;
+const THRESHOLD_ACK_TIMEOUT_MS = 3000;
 
 // Returned `defaults` property will be undefined if the defaults are loading or reloading.
 // Call `reloadDefaults` to clear the defaults and reload from the server.
@@ -101,6 +103,15 @@ function useWsConnection({ defaults, onCloseWs }) {
     if (!slotData) {
       return;
     }
+    const now = Date.now();
+    const pendingValues = slotData.pendingThresholdValues || [];
+    const pendingExpires = slotData.pendingThresholdExpires || [];
+    for (let i = 0; i < pendingValues.length; ++i) {
+      if (pendingValues[i] != null && now >= pendingExpires[i]) {
+        pendingValues[i] = null;
+        pendingExpires[i] = 0;
+      }
+    }
     if (slotData.curValues.length < MAX_SIZE) {
       slotData.curValues.push(msg.values);
     } else {
@@ -118,6 +129,20 @@ function useWsConnection({ defaults, onCloseWs }) {
     // so that animation loops can have a stable reference.
     slotData.curThresholds.length = 0;
     slotData.curThresholds.push(...msg.thresholds);
+
+    // Clear pending flags when target threshold is reflected, or timeout.
+    const now = Date.now();
+    const pendingValues = slotData.pendingThresholdValues || [];
+    const pendingExpires = slotData.pendingThresholdExpires || [];
+    for (let i = 0; i < pendingValues.length; ++i) {
+      if (pendingValues[i] == null) {
+        continue;
+      }
+      if (msg.thresholds[i] === pendingValues[i] || now >= pendingExpires[i]) {
+        pendingValues[i] = null;
+        pendingExpires[i] = 0;
+      }
+    }
   };
 
   useEffect(() => {
@@ -135,6 +160,8 @@ function useWsConnection({ defaults, onCloseWs }) {
         curValues: [new Array(thresholds.length).fill(0)],
         oldest: 0,
         curThresholds: [...thresholds],
+        pendingThresholdValues: new Array(thresholds.length).fill(null),
+        pendingThresholdExpires: new Array(thresholds.length).fill(0),
       };
     });
 
@@ -182,9 +209,19 @@ function ValueMonitor(props) {
   const thresholdLabelRef = React.useRef(null);
   const valueLabelRef = React.useRef(null);
   const canvasRef = React.useRef(null);
+  const [isPending, setIsPending] = useState(false);
+  const isPendingRef = useRef(false);
+  const frozenValueRef = useRef(0);
+  const frozenThresholdRef = useRef(0);
 
   const getSlotData = useCallback(() => {
-    return webUIDataRef.current.slots[slot] || { curValues: [], oldest: 0, curThresholds: [] };
+    return webUIDataRef.current.slots[slot] || {
+      curValues: [],
+      oldest: 0,
+      curThresholds: [],
+      pendingThresholdValues: [],
+      pendingThresholdExpires: [],
+    };
   }, [slot, webUIDataRef]);
 
   const EmitValue = useCallback((val) => {
@@ -193,10 +230,23 @@ function ValueMonitor(props) {
     // Still send back the index since we want to update only one value at a time
     // to the microcontroller.
     const slotData = getSlotData();
+    if (!slotData.pendingThresholdValues) {
+      slotData.pendingThresholdValues = [];
+    }
+    if (!slotData.pendingThresholdExpires) {
+      slotData.pendingThresholdExpires = [];
+    }
+    slotData.pendingThresholdValues[index] = val;
+    slotData.pendingThresholdExpires[index] = Date.now() + THRESHOLD_ACK_TIMEOUT_MS;
+    isPendingRef.current = true;
+    setIsPending(true);
     emit(['update_threshold', slot, slotData.curThresholds, index]);
   }, [emit, getSlotData, index, slot])
 
   function Decrement(e) {
+    if (isPendingRef.current) {
+      return;
+    }
     const slotData = getSlotData();
     const curThresholds = slotData.curThresholds;
     const val = curThresholds[index] - 1;
@@ -207,6 +257,9 @@ function ValueMonitor(props) {
   }
 
   function Increment(e) {
+    if (isPendingRef.current) {
+      return;
+    }
     const slotData = getSlotData();
     const curThresholds = slotData.curThresholds;
     const val = curThresholds[index] + 1;
@@ -244,6 +297,9 @@ function ValueMonitor(props) {
 
     // Mouse Events
     canvas.addEventListener('mousedown', function(e) {
+      if (isPendingRef.current) {
+        return;
+      }
       const curThresholds = getSlotData().curThresholds;
       let pos = getMousePos(canvas, e);
       curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
@@ -251,13 +307,17 @@ function ValueMonitor(props) {
     });
 
     canvas.addEventListener('mouseup', function(e) {
+      if (isPendingRef.current) {
+        is_drag = false;
+        return;
+      }
       const curThresholds = getSlotData().curThresholds;
       EmitValue(curThresholds[index]);
       is_drag = false;
     });
 
     canvas.addEventListener('mousemove', function(e) {
-      if (is_drag) {
+      if (is_drag && !isPendingRef.current) {
         const curThresholds = getSlotData().curThresholds;
         let pos = getMousePos(canvas, e);
         curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
@@ -266,6 +326,9 @@ function ValueMonitor(props) {
 
     // Touch Events
     canvas.addEventListener('touchstart', function(e) {
+      if (isPendingRef.current) {
+        return;
+      }
       const curThresholds = getSlotData().curThresholds;
       let pos = getTouchPos(canvas, e);
       curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
@@ -273,6 +336,10 @@ function ValueMonitor(props) {
     });
 
     canvas.addEventListener('touchend', function(e) {
+      if (isPendingRef.current) {
+        is_drag = false;
+        return;
+      }
       const curThresholds = getSlotData().curThresholds;
       // We don't need to set the curThreshold as it's already updated within the
       // touchstart/touchmove events.
@@ -281,7 +348,7 @@ function ValueMonitor(props) {
     });
 
     canvas.addEventListener('touchmove', function(e) {
-      if (is_drag) {
+      if (is_drag && !isPendingRef.current) {
         const curThresholds = getSlotData().curThresholds;
         let pos = getTouchPos(canvas, e);
         curThresholds[index] = Math.floor(1023 - pos.y/canvas.height * 1023);
@@ -312,6 +379,7 @@ function ValueMonitor(props) {
       const slotData = getSlotData();
       const curValues = slotData.curValues;
       const curThresholds = slotData.curThresholds;
+      const pendingThresholds = slotData.pendingThresholdValues || [];
       const oldest = slotData.oldest;
 
       if (curValues.length === 0 || curThresholds.length <= index) {
@@ -327,16 +395,30 @@ function ValueMonitor(props) {
 
       // Get the latest value. This is either last element in the list, or based off of
       // the circular array.
-      let currentValue = 0;
+      let latestValue = 0;
       if (curValues.length < MAX_SIZE) {
-        currentValue = curValues[curValues.length-1][index];
+        latestValue = curValues[curValues.length-1][index];
       } else {
-        currentValue = curValues[((oldest - 1) % MAX_SIZE + MAX_SIZE) % MAX_SIZE][index];
+        latestValue = curValues[((oldest - 1) % MAX_SIZE + MAX_SIZE) % MAX_SIZE][index];
       }
+
+      const pendingValue = pendingThresholds[index];
+      const pending = pendingValue != null;
+      if (pending !== isPendingRef.current) {
+        isPendingRef.current = pending;
+        setIsPending(pending);
+        if (pending) {
+          frozenValueRef.current = latestValue;
+          frozenThresholdRef.current = pendingValue;
+        }
+      }
+
+      const currentValue = pending ? frozenValueRef.current : latestValue;
+      const displayedThreshold = pending ? frozenThresholdRef.current : curThresholds[index];
 
       // Add background fill.
       let grd = ctx.createLinearGradient(canvas.width/2, 0, canvas.width/2 ,canvas.height);
-      if (currentValue >= curThresholds[index]) {
+      if (currentValue >= displayedThreshold) {
         grd.addColorStop(0, 'lightblue');
         grd.addColorStop(1, 'blue');
       } else {
@@ -360,21 +442,21 @@ function ValueMonitor(props) {
 
       // Threshold Line
       const threshold_height = 3
-      const threshold_pos = (1023 - curThresholds[index]) / 1023 * canvas.height;
+      const threshold_pos = (1023 - displayedThreshold) / 1023 * canvas.height;
       ctx.fillStyle = "black";
       ctx.fillRect(
           0, threshold_pos - Math.floor(threshold_height / 2), canvas.width, threshold_height);
 
       // Threshold Label
-      thresholdLabel.innerText = curThresholds[index];
+      thresholdLabel.innerText = displayedThreshold;
       ctx.font = "30px " + bodyFontFamily;
       ctx.fillStyle = "black";
-      if (curThresholds[index] > 990) {
+      if (displayedThreshold > 990) {
         ctx.textBaseline = 'top';
       } else {
         ctx.textBaseline = 'bottom';
       }
-      ctx.fillText(curThresholds[index].toString(), 0, threshold_pos + threshold_height + 1);
+      ctx.fillText(displayedThreshold.toString(), 0, threshold_pos + threshold_height + 1);
 
       requestId = requestAnimationFrame(render);
     };
@@ -388,11 +470,11 @@ function ValueMonitor(props) {
   }, [EmitValue, getSlotData, index, webUIDataRef]);
 
   return(
-    <Col className="ValueMonitor-col">
+    <Col className="ValueMonitor-col" style={{ position: 'relative' }}>
       <div className="ValueMonitor-buttons">
-        <Button variant="light" size="sm" onClick={Decrement}><b>-</b></Button>
+        <Button variant="light" size="sm" onClick={Decrement} disabled={isPending}><b>-</b></Button>
         <span> </span>
-        <Button variant="light" size="sm" onClick={Increment}><b>+</b></Button>
+        <Button variant="light" size="sm" onClick={Increment} disabled={isPending}><b>+</b></Button>
       </div>
       <Form.Label className="ValueMonitor-label" ref={thresholdLabelRef}>0</Form.Label>
       <Form.Label className="ValueMonitor-label" ref={valueLabelRef}>0</Form.Label>
@@ -400,6 +482,24 @@ function ValueMonitor(props) {
         className="ValueMonitor-canvas"
         ref={canvasRef}
       />
+      {isPending && (
+        <div style={{
+          position: 'absolute',
+          inset: '0',
+          backgroundColor: 'rgba(255, 255, 255, 0.55)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.4rem',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'none',
+        }}>
+          <Spinner animation="border" role="status" variant="primary" aria-label="threshold-updating" />
+          <div style={{ fontSize: '0.75rem', color: '#1f4f8f', fontWeight: 600 }}>
+            更新中...
+          </div>
+        </div>
+      )}
     </Col>
   );
 }
@@ -689,6 +789,12 @@ function FSRWebUI(props) {
       return acc;
     }, {})
   );
+  const [statsBySlot, setStatsBySlot] = useState(
+    slotIds.reduce((acc, slot) => {
+      acc[slot] = {};
+      return acc;
+    }, {})
+  );
 
   function getSlotData(slot) {
     return webUIDataRef.current.slots[slot] || { curThresholds: [] };
@@ -725,6 +831,12 @@ function FSRWebUI(props) {
     wsCallbacks.serial_port_error = function(msg) {
       setSerialPortErrorBySlot(prev => ({ ...prev, [msg.slot]: msg.message || '' }));
     };
+    wsCallbacks.stats = function(msg) {
+      setStatsBySlot(prev => ({
+        ...prev,
+        [msg.slot]: { ...(prev[msg.slot] || {}), ...msg },
+      }));
+    };
 
     return () => {
       delete wsCallbacks.get_profiles;
@@ -733,6 +845,7 @@ function FSRWebUI(props) {
       delete wsCallbacks.serial_port;
       delete wsCallbacks.serial_port_candidates;
       delete wsCallbacks.serial_port_error;
+      delete wsCallbacks.stats;
     };
   }, [wsCallbacksRef]);
 
@@ -775,6 +888,7 @@ function FSRWebUI(props) {
   const slot = slotIds[0];
   const numSensors = (defaults.slots[slot]?.thresholds || []).length;
   const serialPort = serialPortBySlot[slot] || '';
+  const stats = statsBySlot[slot] || {};
   const serialOptions = [...(serialPortCandidatesBySlot[slot] || [])];
   const hasSelectedPortCandidate = serialOptions.some(option => option.path === serialPort);
   const serialSelectValue = hasSelectedPortCandidate ? serialPort : '';
@@ -792,6 +906,19 @@ function FSRWebUI(props) {
                 <Nav.Link as={Link} to="/plot">Plot</Nav.Link>
               </Nav.Item>
             </Nav>
+            <span style={{
+              fontSize: '0.75rem',
+              color: '#555',
+              margin: '0 0.75rem',
+              whiteSpace: 'nowrap',
+              alignSelf: 'center',
+            }}>
+              WEBUIループ: {stats.read_rate != null ? `${stats.read_rate} Hz` : '--'}
+              {' | '}
+              スキャン: {stats.scan_rate != null ? `${stats.scan_rate} Hz` : '--'}
+              {' | '}
+              HID: {stats.joystick_rate != null ? `${stats.joystick_rate} Hz` : '--'}
+            </span>
             <Button alignRight onClick={() => SaveThresholds(slot)}>Save thresholds</Button>
             <Nav className="ml-auto">
               <NavDropdown alignRight title="Serial" id="serial-port-dropdown">
