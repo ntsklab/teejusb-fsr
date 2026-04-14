@@ -29,12 +29,9 @@ PCからWebUIにアクセスできなくなります。
 - ジャンパワイヤ 3本（TX, RX, GND）
 
 ### ソフトウェア
-- Arduino IDE 2.x 以降
-- **ボードパッケージ**: `esp32` by Espressif Systems（v3.0以降、C6対応）
-- **ライブラリ**:
-  - `ESPAsyncWebServer` — [mathieucarbou版](https://github.com/mathieucarbou/ESPAsyncWebServer) 推奨
-  - `AsyncTCP` — ESPAsyncWebServerの依存ライブラリ
-  - `ArduinoJson` — v7以降（Benoit Blanchon作）
+- VS Code + PlatformIO extension
+- PlatformIO Core
+- ESP-IDF toolchain（PlatformIO が自動導入）
 
 ## セットアップ手順
 
@@ -54,18 +51,31 @@ Arduinoにスケッチをアップロードします。
 
 | ESP32-C6 | Arduino Leonardo |
 |----------|------------------|
-| D7 / GPIO17 (RX) | Pin 1 (TX) |
-| D8 / GPIO19 (TX) | Pin 0 (RX) |
+| D4 / GPIO22 (RX) | Pin 1 (TX) |
+| D5 / GPIO23 (TX) | Pin 0 (RX) |
 | GND | GND |
 
-> **注意**: ESP32-C6のGPIOピン番号は `esp32c6-bridge.ino` 内の
+> **注意**: ESP32-C6のGPIOピン番号は `main/esp32c6_bridge_main.cpp` 内の
 > `ARDUINO_RX_PIN` / `ARDUINO_TX_PIN` で変更できます。
+
+> **補足**: GPIO16/17 はデフォルトのコンソール UART と衝突するため、
+> デフォルト配線では使用しません。
 
 > **電圧レベル**: ESP32-C6は3.3V、Arduino Leonardoは5Vです。
 > Leonardoの5V TX → ESP32-C6 3.3V RXは通常問題ありませんが、
 > 安全のためにレベルシフタの使用を推奨します。
 
-### 3. WebUIデータの準備
+### 3. WebUIのビルド
+
+master ブランチの手順に合わせて、まず `webui/` で依存関係を入れてから本番ビルドを生成します。
+
+```bash
+cd webui
+yarn install
+yarn build
+```
+
+### 4. WebUIデータの準備
 
 ```bash
 cd esp32c6-bridge
@@ -74,54 +84,34 @@ bash prepare_data.sh
 
 WebUIのビルド済みファイルがgzip圧縮されて `data/` ディレクトリに配置されます。
 
-> 事前に `webui/` で `npm run build` を実行してビルドを生成してください。
+`prepare_data.sh` は WebUI のビルド成果物を `esp32c6-bridge/data/` に配置します。
+ESP-IDF/PlatformIO ではこの内容から SPIFFS イメージが生成されますが、書き込みは `uploadfs` で別途実行します。
 
-### 4. LittleFSへのアップロード
+### 5. PlatformIO + ESP-IDF でビルド/書き込み
 
-#### 方法A: Arduino IDE 2.x プラグイン（推奨）
-
-1. [arduino-littlefs-upload](https://github.com/earlephilhower/arduino-littlefs-upload/releases)
-   の最新 `.vsix` ファイルをダウンロード
-
-2. Arduino IDE 2.x の拡張機能としてインストール:
-   - `.vsix` ファイルを Arduino IDE のウィンドウに **ドラッグ＆ドロップ**
-   - または: メニュー → `...` → `Install Plugin from VSIX file`
-
-3. Arduino IDE で `esp32c6-bridge.ino` を開き、ボードと COMポートを選択
-
-4. `Ctrl+Shift+P` (macOS: `Cmd+Shift+P`) → **`Upload LittleFS to Pico/ESP8266/ESP32`** を実行
-
-> `data/` フォルダはスケッチファイルと同じ階層に置かれている必要があります。
-> つまり `esp32c6-bridge/data/` の状態が正しい配置です。
-
-#### 方法B: コマンドライン (esptool + mklittlefs)
+リポジトリ直下の `platformio.ini` に `esp32c6_bridge` 環境を追加してあります。
 
 ```bash
-# 1. mklittlefs のパスを確認（esp32 ボードパッケージに同梱）
-MKLITTLEFS=$(find ~/.arduino15/packages/esp32/tools/mklittlefs \
-  -name "mklittlefs" -type f 2>/dev/null | sort | tail -1)
-echo $MKLITTLEFS   # パスが表示されれば OK
-
-# 2. LittleFS イメージを作成
-#    -s: サイズ（デフォルト 4MB フラッシュのパーティション: 0x1E0000 = 1966080 bytes）
-#    実際の値はスケッチビルド時の .partitions.csv に依存するので要確認
-$MKLITTLEFS -c esp32c6-bridge/data/ -b 4096 -p 256 -s 1966080 littlefs.bin
-
-# 3. XIAO ESP32C6 を USB 接続し、esptool でフラッシュに書き込み
-#    オフセットはパーティションテーブルを確認すること（通常 0x290000）
-python3 -m esptool --chip esp32c6 --port /dev/ttyACM0 --baud 921600 \
-  write_flash 0x290000 littlefs.bin
+cd /path/to/fsr
+pio run -e esp32c6_bridge
 ```
 
-> **パーティションオフセットの確認方法**: Arduino IDE でスケッチをビルドし、
-> 出力ログ内の `Generating FS image` 行に表示されるオフセット値を使用してください。
+WebUI を含めてビルドする場合は以下の順です。
 
-### 5. ESP32-C6にスケッチをアップロード
+```bash
+cd webui && yarn install && yarn build
+cd ../esp32c6-bridge && bash prepare_data.sh
+cd .. && pio run -e esp32c6_bridge
+```
 
-Arduino IDEで:
-1. ボード: `ESP32C6 Dev Module` を選択
-2. `esp32c6-bridge.ino` を開く
-3. アップロード
+書き込みはファームウェアと SPIFFS で 2 段階です。
+
+```bash
+pio run -e esp32c6_bridge -t upload
+pio run -e esp32c6_bridge -t uploadfs
+```
+
+必要に応じて `platformio.ini` の `upload_port` / `monitor_port` を環境に合わせて設定してください。
 
 ### 6. 接続して使う
 
@@ -131,16 +121,16 @@ Arduino IDEで:
 
 ## 設定のカスタマイズ
 
-`esp32c6-bridge.ino` の先頭にある定数を変更できます:
+`main/esp32c6_bridge_main.cpp` の先頭にある定数を変更できます:
 
 | 設定 | デフォルト | 説明 |
 |------|-----------|------|
-| `AP_SSID` | `"FSR-Pad"` | WiFi AP名 |
-| `AP_PASSWORD` | `"fsrpad123"` | WiFi APパスワード |
-| `ARDUINO_RX_PIN` | `17` | ESP32-C6のRXピン (D7 / GPIO17) |
-| `ARDUINO_TX_PIN` | `19` | ESP32-C6のTXピン (D8 / GPIO19) |
-| `NUM_SENSORS` | `8` | センサー数（Arduino側と一致させること） |
-| `UI_INTERVAL_MS` | `16` | 値ポーリング間隔（ms） |
+| `kApSsid` | `"FSR-Pad"` | WiFi AP名 |
+| `kApPassword` | `"fsrpad123"` | WiFi APパスワード |
+| `kArduinoRxPin` | `22` | ESP32-C6のRXピン (D4 / GPIO22) |
+| `kArduinoTxPin` | `23` | ESP32-C6のTXピン (D5 / GPIO23) |
+| `kNumSensors` | `8` | センサー数（Arduino側と一致させること） |
+| `kUiIntervalMs` | `16` | 値ポーリング間隔（ms） |
 
 ### STA接続情報の設定（gitに載せない）
 
@@ -180,8 +170,8 @@ static const char* const STA_CANDIDATE_PASSWORDS[] = {
 ## トラブルシューティング
 
 - **WebUIが「Connecting...」のまま**: ESP32-C6のシリアルモニタでエラーを確認。
-  LittleFSにWebUIファイルがアップロードされているか確認。
+  `webui/build` 生成後に `prepare_data.sh` を実行し、`pio run -e esp32c6_bridge -t upload` と `pio run -e esp32c6_bridge -t uploadfs` を順に行ってください。
 - **値が表示されない**: 配線を確認。TX↔RXが正しく接続されているか。
   GNDが共通になっているか。
-- **プロファイルが保存されない**: LittleFSに書き込み領域が確保されているか確認。
-  パーティション設定で LittleFS 用に十分な容量を割り当ててください。
+- **プロファイルが保存されない**: SPIFFS 領域が壊れている可能性があります。
+  一度 `pio run -e esp32c6_bridge -t erase` を実行してから再書き込みしてください。

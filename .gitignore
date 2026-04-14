@@ -103,6 +103,11 @@ webui/server/profiles.txt
 # Local WiFi credentials for ESP32 bridge
 esp32c6-bridge/wifi_secrets.h
 
+.pio/
+build/
+sdkconfig.*
+!sdkconfig.defaults
+
 esp32c6-bridge/data/*
 esp32c6-bridge/mklittlefs.bin
 

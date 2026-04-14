@@ -34,6 +34,37 @@ Follow a guide like [fsr-pad-guide](https://github.com/Sereni/fsr-pad-guide) or 
 1. By default, [A0-A3 are the pins](https://forum.pjrc.com/teensy40_pinout1.png) used for the FSR sensors in this software. If you aren't using these pins [alter the SensorState array](./fsr.ino#L509-L531)
 1. Push the code to the board
 
+### PlatformIO build
+
+This repository now includes a root `platformio.ini` with multiple environments:
+
+- `fsr_leonardo`: Arduino Leonardo / Pro Micro style 32u4 boards using `ArduinoJoystickLibrary`
+- `fsr_teensy40`: Teensy 4.0 build
+- `esp32c6_bridge`: ESP32-C6 WiFi bridge firmware built with ESP-IDF and SPIFFS web assets
+
+Install PlatformIO Core, then run one of the following from the repository root:
+
+```bash
+pio run -e fsr_leonardo
+pio run -e fsr_teensy40
+pio run -e esp32c6_bridge
+```
+
+For the ESP32-C6 bridge WebUI filesystem image, follow the same WebUI build flow as the master branch, then prepare the SPIFFS data directory:
+
+```bash
+cd webui && yarn install && yarn build
+cd ../esp32c6-bridge && bash prepare_data.sh
+cd .. && pio run -e esp32c6_bridge
+```
+
+After the firmware upload, flash the prepared SPIFFS image separately:
+
+```bash
+pio run -e esp32c6_bridge -t upload
+pio run -e esp32c6_bridge -t uploadfs
+```
+
 ### Testing and using the serial monitor
 1. Open `Tools` > `Serial Monitor` to open the Serial Monitor
 1. Within the serial monitor, enter `t` to show current thresholds.

@@ -19,7 +19,7 @@ BUILD_DIR="$SCRIPT_DIR/../webui/build"
 
 if [ ! -d "$BUILD_DIR" ]; then
   echo "ERROR: WebUI build directory not found at $BUILD_DIR"
-  echo "Run 'npm run build' inside webui/ first."
+  echo "Run 'yarn install && yarn build' inside webui/ first."
   exit 1
 fi
 
@@ -29,8 +29,9 @@ mkdir -p "$DATA_DIR/static/css" "$DATA_DIR/static/js"
 
 echo "Copying and compressing WebUI files..."
 
-# index.html — gzip
-gzip -9 -c "$BUILD_DIR/index.html" > "$DATA_DIR/index.html.gz"
+# Normalize hashed asset names so they fit comfortably within SPIFFS filename limits.
+INDEX_TMP="$SCRIPT_DIR/index.tmp.html"
+cp "$BUILD_DIR/index.html" "$INDEX_TMP"
 
 # manifest.json — gzip
 if [ -f "$BUILD_DIR/manifest.json" ]; then
@@ -42,23 +43,27 @@ if [ -f "$BUILD_DIR/robots.txt" ]; then
   cp "$BUILD_DIR/robots.txt" "$DATA_DIR/robots.txt"
 fi
 
-# CSS files — gzip
+# CSS files — rename to short stable name and gzip
 for f in "$BUILD_DIR/static/css/"*.css; do
   [ -f "$f" ] || continue
-  gzip -9 -c "$f" > "$DATA_DIR/static/css/$(basename "$f").gz"
+  css_basename="$(basename "$f")"
+  sed -i "s|/static/css/$css_basename|/static/css/main.css|g" "$INDEX_TMP"
+  gzip -9 -c "$f" > "$DATA_DIR/static/css/main.css.gz"
+  break
 done
 
-# JS files — gzip
+# JS files — rename to short stable name and gzip
 for f in "$BUILD_DIR/static/js/"*.js; do
   [ -f "$f" ] || continue
-  gzip -9 -c "$f" > "$DATA_DIR/static/js/$(basename "$f").gz"
+  js_basename="$(basename "$f")"
+  sed -i "s|/static/js/$js_basename|/static/js/main.js|g" "$INDEX_TMP"
+  gzip -9 -c "$f" > "$DATA_DIR/static/js/main.js.gz"
+  break
 done
 
-# JS LICENSE files — copy as-is (small)
-for f in "$BUILD_DIR/static/js/"*.LICENSE.txt; do
-  [ -f "$f" ] || continue
-  cp "$f" "$DATA_DIR/static/js/$(basename "$f")"
-done
+# index.html — gzip after rewriting asset references
+gzip -9 -c "$INDEX_TMP" > "$DATA_DIR/index.html.gz"
+rm -f "$INDEX_TMP"
 
 echo ""
 echo "=== Data directory summary ==="
