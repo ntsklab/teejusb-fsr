@@ -1,133 +1,259 @@
-# Teejusb's FSR Guide
-A complete software package for FSR dance pads.  
-Join the [![Discord](https://img.shields.io/discord/778312862425939998?color=5865F2&label=Discord&logo=discord&logoColor=white)](https://discord.com/invite/RamvtwuEF2) for any questions/suggestions
+# Teejusb FSRガイド
 
-## Features
-- React web UI to customize sensitivity 
-- Profiles & persistence
-- Light support
+FSRダンスパッド向けのファームウェアとWebUI一式です。
+このブランチでは、従来のArduino/Teensy向けFSRファームウェアに加えて、ESP32-C6を使ってWi-Fi経由でWebUIを公開する構成を主軸にしています。
 
-## Screenshots
+質問や提案があれば [![Discord](https://img.shields.io/discord/778312862425939998?color=5865F2&label=Discord&logo=discord&logoColor=white)](https://discord.com/invite/RamvtwuEF2) に参加してください。
+
+## 機能
+
+- Arduino Leonardo / Pro Micro / Teensy向けFSRファームウェア
+- 8センサー構成を既定としたしきい値調整
+- プロファイル保存
+- ESP32-C6上で動く組み込みWebUI
+- Wi-Fi AP配信と、任意でSTA接続への自動切り替え
+- `[public]` プロファイル更新用の管理者パスワード
+- LED出力サポート
+
+## スクリーンショット
+
 <img src="./img/fsr2.gif" width="550">
 
 <img src="./img/fsr1.gif" width="550">
 
+## リポジトリ構成
 
-## Requirements
-- A [Teensy](https://www.pjrc.com/store/index.html) or Arduino
-  - uses native keyboard library for Arduino and Joystick library for Teensy
-- Python 3.8-3.12
-    - virtualenv
-- Node 12-16 (needs updating for 17+)
-  - yarn
+- `teejusb-fsr.ino`: FSRファームウェア本体
+- `main/fsr/main.cpp`: PlatformIO用のArduinoエントリポイント
+- `main/esp32c6_bridge_main.cpp`: ESP32-C6ブリッジファームウェア
+- `esp32c6-bridge/`: SPIFFS用データと補助スクリプト
+- `webui/`: React WebUIとローカル開発用APIサーバ
+- `platformio.ini`: `fsr_leonardo`, `fsr_teensy40`, `esp32c6_bridge` の各環境定義
 
-## Hardware setup
-Follow a guide like [fsr-pad-guide](https://github.com/Sereni/fsr-pad-guide) or [fsr](https://github.com/vlnguyen/itg-fsr/tree/master/fsr) to setup your Arduino/Teensy with FSRs.
+## 必要なもの
 
-## Firmware setup
-1. Install [Arduino IDE](https://www.arduino.cc/en/software) (skip this if you're using OSX as it's included in Teensyduino)
-1. Install [Teensyduino](https://www.pjrc.com/teensy/td_download.html) and get it connected to your Teensy and able to push firmware via Arduino IDE
-1. In Arduino IDE, set the `Tools` > `USB Type` to `Serial + Keyboard + Mouse + Joystick` (or `Serial + Keyboard + Mouse`)
-1. In Arduino IDE, set the `Tools` > `Board` to your microcontroller (e.g. `Teensy 4.0`)
-1. In Arduino IDE, set the `Tools` > `Port` to select the serial port for the plugged in microcontroller (e.g. `COM5` or `/dev/something`)
-1. Load [fsr.ino](./fsr.ino) in Arduino IDE.
-1. By default, [A0-A3 are the pins](https://forum.pjrc.com/teensy40_pinout1.png) used for the FSR sensors in this software. If you aren't using these pins [alter the SensorState array](./fsr.ino#L509-L531)
-1. Push the code to the board
+通常利用では以下があれば足ります。
 
-### PlatformIO build
+- PlatformIO Core または VS Code + PlatformIO拡張機能
+- Node.js
+- yarn などのnpm互換パッケージマネージャ
 
-This repository now includes a root `platformio.ini` with multiple environments:
+ローカルPC上で旧来のAPIサーバを動かしてWebUI開発をする場合のみ、追加で以下が必要です。
 
-- `fsr_leonardo`: Arduino Leonardo / Pro Micro style 32u4 boards using `ArduinoJoystickLibrary`
-- `fsr_teensy40`: Teensy 4.0 build
-- `esp32c6_bridge`: ESP32-C6 WiFi bridge firmware built with ESP-IDF and SPIFFS web assets
+- Python 3
+- `venv`
 
-Install PlatformIO Core, then run one of the following from the repository root:
+## ハードウェアセットアップ
+
+センサー配線の基本は、[fsr-pad-guide](https://github.com/Sereni/fsr-pad-guide) や [vlnguyen/itg-fsr](https://github.com/vlnguyen/itg-fsr/tree/master/fsr) のような一般的なFSRパッド構成と同様です。
+
+このブランチの既定設定では、8パネル構成を想定しています。
+
+- パッド1: `A0`-`A3`
+- パッド2: `A4`-`A7`
+
+必要なら `teejusb-fsr.ino` 内の `Sensor kSensors[]` を編集して、センサー本数やピン配置を変更してください。
+
+## このブランチの推奨構成
+
+このブランチでは、以下の構成が標準です。
+
+1. Arduino/TeensyがFSRを読み取り、USB HIDを出力する
+2. 同時にUART (`Serial1`) でコマンドをESP32-C6ブリッジへ渡す
+3. ESP32-C6がWebUIを配信し、スマートフォンやPCのブラウザからしきい値やプロファイルを操作する
+
+### 構成イメージ
+
+```
+┌──────────────┐   USB (HID)   ┌────────────────┐
+│ Arduino/     │──────────────→│ PS converter / │
+│ Teensy       │               │ PC / console   │
+│              │               └────────────────┘
+│              │   UART        ┌────────────────┐   WiFi   ┌──────────┐
+│ TX(pin1) ────│──────────────→│ RX ESP32-C6    │←────────→│ Browser  │
+│ RX(pin0) ←───│───────────────│ TX             │          │ WebUI    │
+│ GND ─────────│───────────────│ GND            │          └──────────┘
+└──────────────┘               └────────────────┘
+```
+
+## 1. FSRファームウェアのビルドと書き込み
+
+### このブランチでの既定動作
+
+`teejusb-fsr.ino` では、現在のブランチ向けに以下が既定で有効です。
+
+- `USE_ARDUINO_JOYSTICK_LIBRARY`
+- `USE_SERIAL1_FOR_COMMANDS`
+
+つまり、ATmega32u4系ボードではUSBジョイスティック出力を使い、しきい値コマンドはUSB SerialではなくハードウェアUART (`Serial1`) に流します。
+
+Arduino Leonardo / Pro Microでジョイスティックとして使う場合は、事前に `ArduinoJoystickLibrary` を導入してください。
+
+### PlatformIOでのビルド
+
+リポジトリ直下の `platformio.ini` には、以下の環境があります。
+
+- `fsr_leonardo`: Arduino Leonardo / Pro Micro系32u4ボード
+- `fsr_teensy40`: Teensy 4.0
+- `esp32c6_bridge`: ESP32-C6ブリッジファームウェア
+
+実行例:
 
 ```bash
 pio run -e fsr_leonardo
 pio run -e fsr_teensy40
+```
+
+書き込みもPlatformIOから行えます。
+
+```bash
+pio run -e fsr_leonardo -t upload
+pio run -e fsr_teensy40 -t upload
+```
+
+### Arduino IDEを使う場合
+
+Arduino IDEでも `teejusb-fsr.ino` を直接開けますが、このブランチはPlatformIOでの運用を前提に整備されています。
+
+USB Serial Monitorで従来どおりコマンド確認をしたい場合は、`USE_SERIAL1_FOR_COMMANDS` をコメントアウトして `CMD_SERIAL` をUSB Serialへ戻してください。
+
+## 2. ESP32-C6ブリッジの配線
+
+既定配線は以下です。
+
+| ESP32-C6 | Arduino Leonardo / Pro Micro |
+|----------|-------------------------------|
+| GPIO22 (RX) | Pin 1 (TX) |
+| GPIO23 (TX) | Pin 0 (RX) |
+| GND | GND |
+
+補足:
+
+- ESP32-C6側の既定ピンは `main/esp32c6_bridge_main.cpp` 内の `kArduinoRxPin` / `kArduinoTxPin`
+- センサー数は `kNumSensors = 8`
+- XIAO ESP32C6向けのステータスLEDは `GPIO15`
+
+Leonardo系のTXは5V系です。実機で安定性や保護を優先するなら、ESP32-C6側RXにはレベルシフタの使用を推奨します。
+
+## 3. WebUIアセットのビルド
+
+ESP32-C6ブリッジは `webui/build` の静的ファイルをSPIFFSへ載せて配信します。
+
+```bash
+cd webui
+yarn install
+yarn build
+```
+
+## 4. SPIFFSデータディレクトリの準備
+
+`prepare_data.sh` は `webui/build` を `esp32c6-bridge/data/www` にコピーし、主要ファイルをgzip圧縮してESP32のフラッシュ向けに整形します。
+
+```bash
+cd esp32c6-bridge
+bash prepare_data.sh
+```
+
+## 5. ESP32-C6ブリッジのビルドと書き込み
+
+リポジトリルートへ戻ってブリッジファームウェアをビルドします。
+
+```bash
+cd ..
 pio run -e esp32c6_bridge
 ```
 
-For the ESP32-C6 bridge WebUI filesystem image, follow the same WebUI build flow as the master branch, then prepare the SPIFFS data directory:
-
-```bash
-cd webui && yarn install && yarn build
-cd ../esp32c6-bridge && bash prepare_data.sh
-cd .. && pio run -e esp32c6_bridge
-```
-
-After the firmware upload, flash the prepared SPIFFS image separately:
+書き込みはファームウェアとSPIFFSイメージで分かれます。
 
 ```bash
 pio run -e esp32c6_bridge -t upload
 pio run -e esp32c6_bridge -t uploadfs
 ```
 
-### Testing and using the serial monitor
-1. Open `Tools` > `Serial Monitor` to open the Serial Monitor
-1. Within the serial monitor, enter `t` to show current thresholds.
-1. You can change a sensor threshold by entering numbers, where the first number is the sensor (0-indexed) followed by the threshold value. For example, `3 180` would set the 4th sensor to a threshold of 180.  You can change these more easily in the UI later.
-1. Enter `v` to get the current sensor values.
-1. Putting pressure on an FSR, you should notice the values change if you enter `v` again while maintaining pressure.
+必要に応じて `platformio.ini` 側で `upload_port` や `monitor_port` を環境に合わせて設定してください。
 
+## 6. WebUIへ接続する
 
-## UI setup
-1. Install [Python](https://www.python.org/downloads/). On Linux you can install Python with your distribution's package manager. On some systems you might have to additionally install the python3 header files (usually called `python3-dev` or similar).
-1. Install [Node](https://nodejs.org/en/download/)
-    - Install [yarn](https://classic.yarnpkg.com/en/docs/install#windows-stable). A quick way to do this is with NPM: `npm install -g yarn`
-1. Start the WebUI, then select device ports from `Serial 1P` and `Serial 2P`.
-  - The dropdown only shows devices matching hardcoded keywords in `SERIAL_PORT_KEYWORDS` within [server.py](./webui/server/server.py), so add your board naming pattern there if needed.
-  - Selected ports are saved per slot (`1P` and `2P`) and restored after restart.
-  - Profiles are also managed independently per slot.
-  - You also may need to [modify](https://github.com/teejusb/fsr/pull/1#discussion_r514585060) the `sensor_numbers` variable.
-1. Open a command prompt (or terminal) and navigate to `./webui/server` with `cd webui/server`
-1. Run `python -m venv venv` (you may need to replace `python` with `py` on Windows or potentially `python3` on Linux)
-1. Run `venv\Scripts\activate` (on Linux you run `source venv/bin/activate`)
-1. Run `pip install -r requirements.txt` to install dependencies (might need to use `pip3` instead of `pip` on Linux)
-1. Then move to the `./webui` directory by doing `cd ..`
-1. Run `yarn install && yarn build && yarn start-api`
+既定ではESP32-C6がアクセスポイントを立てます。
 
-The UI should be up and running on http://localhost:5000 and you can use your device IP and the port to reach it from your phone (e.g. http://192.168.0.xxx:5000 )
+- SSID: `FSR-Pad`
+- パスワード: `fsrpad123`
+- URL: `http://192.168.4.1`
 
+手順:
 
-## Troubleshooting 
-- If you use localhost in your browser and if the UI looks choppy, try using your local IP instead
-- If you see the following error, ensure the "Serial Monitor" isn't already open in Arduino IDE `serial.serialutil.SerialException: [Errno 16] could not open port /dev/cu.usbmodem83828101: [Errno 16] Resource busy: '/dev/cu.usbmodem83828101`
-- If you notice that your input is delayed and perhaps that delay increases over time, you can sometimes rectify that by restarting the server. Close your `start-api` window and run it again.
+1. スマートフォンまたはPCで `FSR-Pad` に接続
+2. ブラウザで `http://192.168.4.1` を開く
+3. WebUIからしきい値やプロファイルを操作
 
-## Tips
-### Make a desktop shortcut (Windows)
-Create a new text file called `start_fsrs.bat` and place it on your desktop.
-```bat
-start "" http://YOUR_PC_NAME_OR_IP:5000/
-cd C:\Users\YourUser\path\to\fsr\webui
+## 7. 必要ならSTAモードを使う
+
+`esp32c6-bridge/wifi_secrets.h.example` を元に `wifi_secrets.h` を作ると、起動時に既知のWi-Fiへ接続を試みます。
+
+```bash
+cd esp32c6-bridge
+cp wifi_secrets.h.example wifi_secrets.h
+```
+
+SSIDとパスワードを埋めたあと再ビルドしてください。
+
+動作仕様:
+
+- 起動時にSTA候補へ順番に接続を試行
+- 失敗したらAPモードへフォールバック
+- APモード中も一定間隔でSTA再接続を試行
+- STA接続に成功したらAPを停止
+
+## 設定ポイント
+
+ESP32-C6側の主要設定は `main/esp32c6_bridge_main.cpp` の定数で調整できます。
+
+- AP名: `kApSsid`
+- APパスワード: `kApPassword`
+- 管理者パスワード: `kAdminPassword`
+- UARTピン: `kArduinoRxPin`, `kArduinoTxPin`
+- センサー数: `kNumSensors`
+- UIポーリング周期: `kUiIntervalMs`
+
+`kAdminPassword` の既定値は `admin123` です。公開運用するなら書き換えてからビルドしてください。
+
+## 8. 従来のPCローカルWebUIを使う場合
+
+このブランチの主用途はESP32-C6内蔵WebUIですが、`webui/server/server.py` を使ってローカルPC上で従来のWebUIを動かすこともできます。
+
+これは以下の用途に向いています。
+
+- WebUIの開発
+- ESP32-C6を使わず、USB Serial経由でPCから直接調整したい場合
+
+手順:
+
+```bash
+cd webui/server
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cd ..
+yarn install
+yarn build
 yarn start-api
 ```
-Now you can just click on that file to open the UI and start the server.
 
+起動後は通常 `http://localhost:5000` で利用できます。
 
-## Joystick Support on Arduino Leonardo and Pro Micro
+このモードでは、対象デバイスが `webui/server/server.py` の `SERIAL_PORT_KEYWORDS` に一致している必要があります。
 
-The FSR firmware will configure Teensy devices as USB joysticks, and other Arduino devices as USB keyboards. Some Arduino boards such as the Arduino Leonardo and Sparkfun's Pro Micro can be configured as Joysticks using an additional third-party library.
+## トラブルシューティング
 
-Install ArduinoJoystickLibrary, by following the installation instructions in that project's readme. https://github.com/MHeironimus/ArduinoJoystickLibrary#installation-instructions
+- WebUIが開いても `Connecting...` のままなら、ESP32-C6とArduino間のUART配線、GND共通、`USE_SERIAL1_FOR_COMMANDS` の有効化を確認してください
+- ESP32-C6側で画面が出ない場合は、`webui/build` を作り直してから `esp32c6-bridge/prepare_data.sh` を再実行し、`upload` と `uploadfs` の両方をやり直してください
+- STA接続しない場合は `wifi_secrets.h` の配列数と内容を確認してください
+- ローカルWebUIでシリアルポートが見つからない場合は、`SERIAL_PORT_KEYWORDS` に自分のボード名を追加してください
+- USB Serial Monitorでしきい値確認ができない場合は、このブランチでは既定でコマンド経路が `Serial1` に切り替わっている点に注意してください
 
-> 1. Download https://github.com/MHeironimus/ArduinoJoystickLibrary/archive/master.zip
-> 2. In the Arduino IDE, select Sketch > Include Library > Add .ZIP Library.... Browse to where the downloaded ZIP file is located and click Open.
+## ジョイスティック対応メモ
 
-Find this line, and remove the slashes at the beginning to uncomment it.
-```c++
-// #define USE_ARDUINO_JOYSTICK_LIBRARY
-```
+Teensyでは内蔵Joystick APIを使います。
+Arduino Leonardo / Pro Micro系では `ArduinoJoystickLibrary` を使います。
 
-```c++
-#define USE_ARDUINO_JOYSTICK_LIBRARY
-```
-
-## Support for RP2040
-
-The RP2040 is the microcontroller used by the Raspberry Pi Pico. The Pi Pico only exposes 3 analog input pins, but the RP2040 actually has 4. Various other RP2040 development boards do make it easy to access all 4 analog pins, which is more suitable for building a 4-panel dance pad.
-
-To run the FSR firmware on an RP2040-based device, install "Raspberry Pi Pico/RP2040" 3.6.1 or newer in the Arduino IDE boards manager. Make sure the "USB Stack" option in the Tools menu is set to "Pico SDK."
+RP2040系についてもコード上で対応がありますが、このREADMEの主手順は、このブランチの標準構成である Leonardo / Teensy + ESP32-C6ブリッジを対象にしています。
